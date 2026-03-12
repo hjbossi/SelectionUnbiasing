@@ -39,13 +39,13 @@ void GetFiles(char const *input, vector<string> &files) {
   TSystemDirectory dir(input, input);
   TList *list = dir.GetListOfFiles();
 
+
   if (list) {
     TSystemFile *file;
     string fname;
     TIter next(list);
     while ((file = (TSystemFile *)next())) {
       fname = file->GetName();
-
       if (file->IsDirectory() && (fname.find(".") == string::npos)) {
         string newDir = string(input) + fname + "/";
         GetFiles(newDir.c_str(), files);
@@ -71,15 +71,17 @@ void FillChain(TChain &chain, vector<string> &files) {
 void startBasis() {
 
   // config
-  const char* inputDir =  "/home/hbossi/SelectionUnbiasing/MCOUTPUT/";  // <-- directory containing ROOT files
+  const char* inputDir =  "/home/hbossi/SelectionUnbiasing/MCOutput/";  // <-- directory containing ROOT files
   const char* treeName = "tgenBefore";
+  const char* outFile  = "startBasis_output.root";
 
-  const double ptShift = 10.0;   // GeV absolute shift
-  // const double ptFrac = 1.05; // optional multiplicative shift
+  // target (unbiased) window
+  const double pTWindowXLow  = 80;
+  const double pTWindowXHigh = 140;
 
-  // set the window of pTs that will be accepted by X
-  const double pTWindowXLow  = 100; 
-  const double pTWindowXHigh = 110; 
+  // biased window (shifted up)
+  const double ptShift = 10.0;     
+  
   
   // then the window Y becomes
   const double pTWindowYLow  = pTWindowXLow  + ptShift; 
@@ -103,8 +105,13 @@ void startBasis() {
 
   TTreeReaderValue<Int_t>    nJets(reader, "nJets");
   TTreeReaderArray<Float_t> pt(reader, "pt");
+  TTreeReaderArray<Float_t> eta(reader, "eta");
+  TTreeReaderArray<Float_t> phi(reader, "phi");
+  TTreeReaderArray<Float_t> mass(reader, "mass");
   TTreeReaderValue<Float_t> weight(reader, "weight");
   TTreeReaderValue<std::vector<std::vector<double>>> const_pt(reader, "const_pt");
+  TTreeReaderValue<std::vector<std::vector<double>>> const_eta(reader, "const_eta");
+  TTreeReaderValue<std::vector<std::vector<double>>> const_phi(reader, "const_phi");
 
 
   // Histograms
@@ -118,6 +125,43 @@ void startBasis() {
   hPtY->SetLineColor(kRed);
   hPtX->SetLineWidth(2);
   hPtY->SetLineWidth(2);
+
+  // -----------------------------
+  // Output trees (per-jet)
+  // -----------------------------
+  TFile fout(outFile, "RECREATE");
+  TTree *tX = new TTree("tX", "biased X jets (raw)");
+  TTree *tY = new TTree("tY", "biased Y jets (pT-shifted)");
+  TTree *tPP = new TTree("tPP", "unbiased sample (X + Y)");
+
+  float out_pt = 0.0f;
+  float out_pt_raw = 0.0f;
+  float out_pt_shifted = 0.0f;
+  float out_eta = 0.0f;
+  float out_phi = 0.0f;
+  float out_mass = 0.0f;
+  float out_weight = 1.0f;
+  int out_source = 0; // 0 = X, 1 = Y
+  std::vector<double> out_const_pt;
+  std::vector<double> out_const_eta;
+  std::vector<double> out_const_phi;
+
+  auto setup_tree = [&](TTree *t) {
+    t->Branch("pt", &out_pt, "pt/F");
+    t->Branch("pt_raw", &out_pt_raw, "pt_raw/F");
+    t->Branch("pt_shifted", &out_pt_shifted, "pt_shifted/F");
+    t->Branch("eta", &out_eta, "eta/F");
+    t->Branch("phi", &out_phi, "phi/F");
+    t->Branch("mass", &out_mass, "mass/F");
+    t->Branch("weight", &out_weight, "weight/F");
+    t->Branch("source", &out_source, "source/I");
+    t->Branch("const_pt", &out_const_pt);
+    t->Branch("const_eta", &out_const_eta);
+    t->Branch("const_phi", &out_const_phi);
+  };
+  setup_tree(tX);
+  setup_tree(tY);
+  setup_tree(tPP);
 
   // -----------------------------
   // Event loop
@@ -138,8 +182,20 @@ void startBasis() {
       // X histos
       // only fill these histograms if it is within the X window
       if((pTWindowXLow < ptRaw) && (ptRaw < pTWindowXHigh)){
-            std::cout << ptRaw << std::endl;
             hPtX->Fill(ptRaw, *weight);
+            out_pt = ptRaw;
+            out_pt_raw = ptRaw;
+            out_pt_shifted = ptRaw + ptShift;
+            out_eta = eta[j];
+            out_phi = phi[j];
+            out_mass = mass[j];
+            out_weight = *weight;
+            out_source = 0;
+            out_const_pt = (*const_pt)[j];
+            out_const_eta = (*const_eta)[j];
+            out_const_phi = (*const_phi)[j];
+            tX->Fill();
+            tPP->Fill();
       }
   
       
@@ -158,6 +214,19 @@ void startBasis() {
 
       if((pTWindowYLow < ptShifted) && (ptShifted < pTWindowYHigh)){
           hPtY->Fill(ptShifted, *weight);
+          out_pt = ptShifted;
+          out_pt_raw = ptRaw;
+          out_pt_shifted = ptShifted;
+          out_eta = eta[j];
+          out_phi = phi[j];
+          out_mass = mass[j];
+          out_weight = *weight;
+          out_source = 1;
+          out_const_pt = (*const_pt)[j];
+          out_const_eta = (*const_eta)[j];
+          out_const_phi = (*const_phi)[j];
+          tY->Fill();
+          tPP->Fill();
       }
     }
     
@@ -202,4 +271,14 @@ void startBasis() {
   leg->Draw();
 
   c->SaveAs("jetPtShift_TChainReader.pdf");
+
+  // Save histograms and trees for downstream unbiasing.
+  hPtX->Write();
+  hPtY->Write();
+  hpTpp->Write();
+  c->Write();
+  tX->Write();
+  tY->Write();
+  tPP->Write();
+  fout.Close();
 }
