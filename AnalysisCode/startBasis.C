@@ -73,6 +73,8 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
                 const char* outFile  = "startBasis_output.root",
                 double pTLow = 100,
                 double pTHigh = 140,
+                double p = 8.0,          
+                double d = 0.1,          
                 unsigned rngSeed = 12345) {
 
   // config
@@ -194,39 +196,39 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
       // realistic eta cut
       if(eta[j] < -2.4 || eta[j] > 2.4) continue; 
 
-      // X histos
-      // only fill these histograms if it is within the X window
-      if((pTWindowXLow < ptRaw) && (ptRaw < pTWindowXHigh)){
-            hPtX->Fill(ptRaw, *weight);
-            out_pt = ptRaw;
-            out_pt_raw = ptRaw;
-            out_pt_shifted = ptRaw;
-            out_eta = eta[j];
-            out_phi = phi[j];
-            out_mass = mass[j];
-            out_weight = *weight;
-            out_source = 0;
-            out_const_pt = (*const_pt)[j];
-            out_const_eta = (*const_eta)[j];
-            out_const_phi = (*const_phi)[j];
-            tX->Fill();
-            tRef->Fill();
-            // Downsample X into biased sample with probability xKeepFrac
-            if (uni01(rng) < xKeepFrac) {
-              tBiased->Fill();
-            }
-            tPP->Fill();
+      if((pTLow < ptRaw) && (ptRaw < pTHigh)){
+        hPtX->Fill(ptRaw, *weight);
+        
+        // Calculate bias weight using your formula
+        double ptL_p = std::pow(pTLow, p);
+        double ptH_p = std::pow(pTHigh, p);
+        double ptRaw_p = std::pow(ptRaw, p);
+        
+        double biasWeight = (ptL_p - ptH_p * d + (-1.0 + d) * ptRaw_p) / (ptL_p - ptH_p);
+        
+        out_pt = ptRaw;
+        out_pt_raw = ptRaw;
+        out_pt_shifted = ptRaw;
+        out_eta = eta[j];
+        out_phi = phi[j];
+        out_mass = mass[j];
+        out_weight = *weight;
+        out_source = 0;
+        out_const_pt = (*const_pt)[j];
+        out_const_eta = (*const_eta)[j];
+        out_const_phi = (*const_phi)[j];
+        tX->Fill();
+        tRef->Fill();
+        
+        // Downsample X with probability = biasWeight
+        if (uni01(rng) < biasWeight) {
+            tBiased->Fill();
+        }
+        tPP->Fill();
       }
-  
-      
-      // // for each jet, calculate the basis vector
-      // int nConst = const_pt->size();
-      // for (size_t j = 0; j < nConst; ++j) {
-
-      // }
       
 
-      if((pTWindowYLow < ptRaw) && (ptRaw < pTWindowYHigh)){
+      if((pTLow < ptRaw) && (ptRaw < pTHigh)){
           hPtY->Fill(ptRaw, *weight);
           out_pt = ptRaw;
           out_pt_raw = ptRaw;

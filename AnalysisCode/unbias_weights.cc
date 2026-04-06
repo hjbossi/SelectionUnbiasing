@@ -270,7 +270,7 @@ int main(int argc, char *argv[]) {
     const double pt_max  = std::stod(get_arg(argc, argv, "--pt-max", "1e9"));
     const double dR_min  = std::stod(get_arg(argc, argv, "--dR-min", "0.001"));
 
-    const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "100000"));
+    const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "200000"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
     const double tol             = std::stod(get_arg(argc, argv, "--tol",            "1e-6"));
     const double adam_beta1      = std::stod(get_arg(argc, argv, "--adam-beta1",     "0.9"));
