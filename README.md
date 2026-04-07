@@ -1,6 +1,6 @@
 # SelectionUnbiasing
 
-Event-by-event reweighting to remove selection bias from heavy-ion jet samples, following the information-theoretic framework of Andres, Bossi, Holguin (arXiv:2501.17219).
+Event-by-event reweighting to remove selection bias from heavy-ion jet samples, following the information-theoretic framework (arXiv:2501.17219).
 
 ## Overview
 This repo provides a small pipeline to:
@@ -84,5 +84,4 @@ Outputs:
 - For array-style trees, `nJets` + arrays are expected; for flat trees, `pt` is a scalar.
 
 ## Citation
-If you use this method, please cite:
-- Andres, Bossi, Holguin, arXiv:2501.17219
+
