@@ -214,13 +214,6 @@ int main(int argc, char* argv[]) {
   t->SetBranchAddress("w_unbias", &w_unbias);
   t->SetBranchAddress("w_base", &w_base);
   t->SetBranchAddress("w_total", &w_total);
-  const bool has_w_analytic = (t->GetBranch("w_analytic") != nullptr);
-  if (has_w_analytic) {
-    t->SetBranchAddress("w_analytic", &w_analytic);
-  }
-  if (t->GetBranch("source")) {
-    t->SetBranchAddress("source", &source);
-  }
   const bool has_const = (t->GetBranch("const_pt") != nullptr &&
                           t->GetBranch("const_eta") != nullptr &&
                           t->GetBranch("const_phi") != nullptr);
@@ -256,7 +249,6 @@ int main(int argc, char* argv[]) {
     h_base->Fill(pt, w_base);
     h_total->Fill(pt, w_total);
     h_w_unbias->Fill(w_unbias);
-    if (has_w_analytic) h_w_analytic->Fill(w_analytic);
     if (pt >= pt_min && pt <= pt_max && has_const && const_pt && const_eta && const_phi) {
       if (const_pt->size() == const_eta->size() && const_pt->size() == const_phi->size()) {
         fill_eec(h_eec_base, *const_pt, *const_eta, *const_phi, w_base);
@@ -317,6 +309,7 @@ int main(int argc, char* argv[]) {
   h_eec_target->SetLineWidth(3);
 
   gStyle->SetOptStat(0);
+  gStyle->SetOptTitle(0);
   gStyle->SetTitleFont(42, "XYZ");
   gStyle->SetLabelFont(42, "XYZ");
   gStyle->SetTitleSize(0.05, "XYZ");
@@ -324,13 +317,14 @@ int main(int argc, char* argv[]) {
 
   TCanvas *c = new TCanvas("c_unbias", "unbias check", 900, 700);
   gPad->SetLogy();
+  gPad->SetTicks(1,1); 
   gPad->SetLeftMargin(0.12);
   gPad->SetRightMargin(0.04);
   h_base->Draw("hist");
   h_total->Draw("hist same");
   h_target->Draw("hist same");
 
-  TLegend *leg = new TLegend(0.52, 0.70, 0.88, 0.88);
+  TLegend *leg = new TLegend(0.52, 0.7, 0.88, 0.9);
   leg->AddEntry(h_base, "biased sample (base weight)", "l");
   leg->AddEntry(h_total, "weighted sample (base x unbias)", "l");
   leg->AddEntry(h_target, Form("unbiased target %s", target_tree.c_str()), "l");
@@ -348,41 +342,37 @@ int main(int argc, char* argv[]) {
   h_total->Write();
   h_target->Write();
   h_w_unbias->Write();
-  if (has_w_analytic) h_w_analytic->Write();
   h_eec_base->Write();
   h_eec_total->Write();
   h_eec_target->Write();
   c->Write();
 
-  c->SaveAs("plot_unbias_weights_check.pdf");
+  c->SaveAs("plot_unbias_pT_check.pdf");
 
-  if (has_w_analytic) {
-    TCanvas *cw = new TCanvas("c_weights", "weight check", 700, 600);
-    h_w_unbias->SetLineColor(kRed + 1);
-    h_w_unbias->SetLineWidth(2);
-    h_w_analytic->SetLineColor(kBlack);
-    h_w_analytic->SetLineWidth(2);
-    h_w_analytic->SetLineStyle(2);
-    h_w_analytic->Draw("hist");
-    h_w_unbias->Draw("hist same");
-    TLegend *lw = new TLegend(0.55, 0.75, 0.88, 0.88);
-    lw->AddEntry(h_w_analytic, "analytic weights", "l");
-    lw->AddEntry(h_w_unbias, "unbias weights", "l");
-    lw->SetBorderSize(0);
-    lw->SetFillStyle(0);
-    lw->Draw();
-    cw->SaveAs("plot_unbias_weights_weights.pdf");
-    delete cw;
-  }
+
+  TCanvas *cw = new TCanvas("c_weights", "weight check", 700, 600);
+  cw->SetTicks(1,1);
+  cw->SetLogy(); 
+  h_w_unbias->SetLineColor(kRed + 1);
+  h_w_unbias->SetLineWidth(2);
+  h_w_unbias->Draw("hist");
+  TLegend *lw = new TLegend(0.55, 0.75, 0.88, 0.88);
+  lw->AddEntry(h_w_unbias, "unbias weights", "l");
+  lw->SetBorderSize(0);
+  lw->SetFillStyle(0);
+  lw->Draw();
+  cw->SaveAs("plot_unbias_weights_weights.pdf");
+  delete cw;
 
   // EEC comparison plot
   TCanvas *ce = new TCanvas("c_eec", "EEC comparison", 800, 600);
   ce->SetLogy(); 
-  ce->SetLogx(); 
+  ce->SetLogx();
+  ce->SetTicks(1,1); 
   h_eec_target->Draw("hist");
   h_eec_base->Draw("hist same");
   h_eec_total->Draw("hist same");
-  TLegend *lege = new TLegend(0.52, 0.70, 0.88, 0.88);
+  TLegend *lege = new TLegend(0.52, 0.3, 0.88, 0.5);
   lege->AddEntry(h_eec_base, "biased sample (base weight)", "l");
   lege->AddEntry(h_eec_total, "weighted sample (base x unbias)", "l");
   lege->AddEntry(h_eec_target, Form("unbiased target %s", target_tree.c_str()), "l");
@@ -405,7 +395,7 @@ int main(int argc, char* argv[]) {
 
       std::vector<double> min = {6.396393e04*0.001, 5.151869e-01*0.001,5.468804*0.001,2.700238e02*0.001, 4.075668e03*0.001 };
       std::vector<double> max = {6.396393e04*1000, 5.151869e-01*1000,5.468804*1000,2.700238e02*1000, 4.075668e03*1000 };
-      int nbins = 100; // Desired number of log bins
+      int nbins = 20; // Desired number of log bins
 
        
       TH1D *hgw_base[nphys];
@@ -512,7 +502,7 @@ int main(int argc, char* argv[]) {
     
       // }
       // Overlay plots with ratio panel
-      TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 1000, 800);
+      TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 5000, 4000);
       ctw->Divide(5, 3);
       TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
       legw->AddEntry(hgw_target[0], Form("unbiased target %s", target_tree.c_str()), "l");
