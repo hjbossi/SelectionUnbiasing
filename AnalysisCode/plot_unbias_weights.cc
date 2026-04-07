@@ -315,11 +315,22 @@ int main(int argc, char* argv[]) {
   gStyle->SetTitleSize(0.05, "XYZ");
   gStyle->SetLabelSize(0.04, "XYZ");
 
-  TCanvas *c = new TCanvas("c_unbias", "unbias check", 900, 700);
+  TCanvas *c = new TCanvas("c_unbias", "unbias check", 900, 900);
+  TPad *p_top = new TPad("p_pt_top", "", 0.0, 0.30, 1.0, 1.0);
+  TPad *p_bot = new TPad("p_pt_bot", "", 0.0, 0.0, 1.0, 0.30);
+  p_top->SetBottomMargin(0.0);
+  p_top->SetLeftMargin(0.12);
+  p_top->SetRightMargin(0.04);
+  p_bot->SetTopMargin(0.0);
+  p_bot->SetBottomMargin(0.30);
+  p_bot->SetLeftMargin(0.12);
+  p_bot->SetRightMargin(0.04);
+  p_top->Draw();
+  p_bot->Draw();
+
+  p_top->cd();
   gPad->SetLogy();
   gPad->SetTicks(1,1); 
-  gPad->SetLeftMargin(0.12);
-  gPad->SetRightMargin(0.04);
   h_base->Draw("hist");
   h_total->Draw("hist same");
   h_target->Draw("hist same");
@@ -331,6 +342,33 @@ int main(int argc, char* argv[]) {
   leg->SetBorderSize(0);
   leg->SetFillStyle(0);
   leg->Draw();
+
+  p_bot->cd();
+  gPad->SetTicks(1,1);
+  TH1D *h_ratio_base = (TH1D*)h_base->Clone("h_ratio_base_pt");
+  TH1D *h_ratio_total = (TH1D*)h_total->Clone("h_ratio_total_pt");
+  h_ratio_base->Divide(h_target);
+  h_ratio_total->Divide(h_target);
+  h_ratio_total->SetTitle("; p_{T} [GeV]; ratio to target");
+  h_ratio_total->SetLineColor(kRed + 1);
+  h_ratio_base->SetLineColor(kBlue + 1);
+  h_ratio_total->SetLineWidth(2);
+  h_ratio_base->SetLineWidth(2);
+  h_ratio_total->SetMinimum(0.5);
+  h_ratio_total->SetMaximum(1.5);
+  h_ratio_total->GetYaxis()->SetNdivisions(505);
+  h_ratio_total->GetYaxis()->SetTitleSize(0.10);
+  h_ratio_total->GetYaxis()->SetTitleOffset(0.5);
+  h_ratio_total->GetYaxis()->SetLabelSize(0.08);
+  h_ratio_total->GetXaxis()->SetTitleSize(0.10);
+  h_ratio_total->GetXaxis()->SetLabelSize(0.08);
+  h_ratio_total->Draw("hist");
+  h_ratio_base->Draw("hist same");
+  TLine *lr_pt = new TLine(h_ratio_total->GetXaxis()->GetXmin(), 1.0,
+                           h_ratio_total->GetXaxis()->GetXmax(), 1.0);
+  lr_pt->SetLineStyle(2);
+  lr_pt->SetLineColor(kGray + 2);
+  lr_pt->Draw("same");
 
   // Normalize EEC by total jet weight (per-jet average)
   if (sumw_base > 0.0) h_eec_base->Scale(1.0 / sumw_base);
@@ -365,10 +403,23 @@ int main(int argc, char* argv[]) {
   delete cw;
 
   // EEC comparison plot
-  TCanvas *ce = new TCanvas("c_eec", "EEC comparison", 800, 600);
-  ce->SetLogy(); 
-  ce->SetLogx();
-  ce->SetTicks(1,1); 
+  TCanvas *ce = new TCanvas("c_eec", "EEC comparison", 800, 800);
+  TPad *p_eec_top = new TPad("p_eec_top", "", 0.0, 0.30, 1.0, 1.0);
+  TPad *p_eec_bot = new TPad("p_eec_bot", "", 0.0, 0.0, 1.0, 0.30);
+  p_eec_top->SetBottomMargin(0.0);
+  p_eec_top->SetLeftMargin(0.12);
+  p_eec_top->SetRightMargin(0.04);
+  p_eec_bot->SetTopMargin(0.0);
+  p_eec_bot->SetBottomMargin(0.30);
+  p_eec_bot->SetLeftMargin(0.12);
+  p_eec_bot->SetRightMargin(0.04);
+  p_eec_top->Draw();
+  p_eec_bot->Draw();
+
+  p_eec_top->cd();
+  gPad->SetLogy(); 
+  gPad->SetLogx();
+  gPad->SetTicks(1,1); 
   h_eec_target->Draw("hist");
   h_eec_base->Draw("hist same");
   h_eec_total->Draw("hist same");
@@ -379,6 +430,35 @@ int main(int argc, char* argv[]) {
   lege->SetBorderSize(0);
   lege->SetFillStyle(0);
   lege->Draw();
+
+  p_eec_bot->cd();
+  gPad->SetLogx();
+  gPad->SetTicks(1,1);
+  TH1D *h_ratio_base_eec = (TH1D*)h_eec_base->Clone("h_ratio_base_eec");
+  TH1D *h_ratio_total_eec = (TH1D*)h_eec_total->Clone("h_ratio_total_eec");
+  h_ratio_base_eec->Divide(h_eec_target);
+  h_ratio_total_eec->Divide(h_eec_target);
+  h_ratio_total_eec->SetTitle("; #theta; ratio to target");
+  h_ratio_total_eec->SetLineColor(kRed + 1);
+  h_ratio_base_eec->SetLineColor(kBlue + 1);
+  h_ratio_total_eec->SetLineWidth(2);
+  h_ratio_base_eec->SetLineWidth(2);
+  h_ratio_total_eec->SetMinimum(0.5);
+  h_ratio_total_eec->SetMaximum(1.5);
+  h_ratio_total_eec->GetYaxis()->SetNdivisions(505);
+  h_ratio_total_eec->GetYaxis()->SetTitleSize(0.10);
+  h_ratio_total_eec->GetYaxis()->SetTitleOffset(0.5);
+  h_ratio_total_eec->GetYaxis()->SetLabelSize(0.08);
+  h_ratio_total_eec->GetXaxis()->SetTitleSize(0.10);
+  h_ratio_total_eec->GetXaxis()->SetLabelSize(0.08);
+  h_ratio_total_eec->Draw("hist");
+  h_ratio_base_eec->Draw("hist same");
+  TLine *lr_eec = new TLine(h_ratio_total_eec->GetXaxis()->GetXmin(), 1.0,
+                            h_ratio_total_eec->GetXaxis()->GetXmax(), 1.0);
+  lr_eec->SetLineStyle(2);
+  lr_eec->SetLineColor(kGray + 2);
+  lr_eec->Draw("same");
+
   ce->SaveAs("plot_eec_compare.pdf");
   ce->Write();
 
