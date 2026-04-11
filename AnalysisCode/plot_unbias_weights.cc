@@ -159,12 +159,13 @@ static void fill_eec(TH1D *h, const std::vector<double> &cpt,
                      double wjet) {
   const size_t nconst = cpt.size();
   if (nconst < 2) return;
-  double sumpt = 0.0;
-  for (size_t i = 0; i < nconst; ++i) {
-    if (cpt[i] > 0.0) sumpt += cpt[i];
-  }
-  if (sumpt <= 0.0) return;
-  const double norm = 1.0 / (sumpt * sumpt);
+  // double sumpt = 0.0;
+  // for (size_t i = 0; i < nconst; ++i) {
+  //   if (cpt[i] > 0.0) sumpt += cpt[i];
+  // }
+  // if (sumpt <= 0.0) return;
+  // change the norm to be 120
+  const double norm = 1.0 / (120.0 * 120.0);
   for (size_t i = 0; i < nconst; ++i) {
     if (cpt[i] <= 0.0) continue;
     for (size_t k = i + 1; k < nconst; ++k) {

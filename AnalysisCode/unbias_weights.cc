@@ -115,7 +115,7 @@ static std::vector<double> evaluate_basis(
     std::vector<double> g(nb, 0.0);
     if (ptjet <= 0.0) return g;
 
-    const double pt2 = ptjet * ptjet;
+    const double pt2 = 120*120//change for testing to be the norm (HB 4/11/26), was ptjet * ptjet;
     const size_t nc  = cpt.size();
 
     for (size_t i = 0; i < nc; ++i) {
