@@ -21,7 +21,9 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -116,6 +118,34 @@ static std::vector<double> evaluate_basis(
         }
     }
     return g;
+}
+
+static void set_logx_range_from_content(TH1D *h1, TH1D *h2, TH1D *h3) {
+  double xmin = std::numeric_limits<double>::infinity();
+  double xmax = 0.0;
+  auto scan = [&](TH1D *h) {
+    const int n = h->GetNbinsX();
+    for (int i = 1; i <= n; ++i) {
+      const double c = h->GetBinContent(i);
+      if (c <= 0.0) continue;
+      const double lo = h->GetBinLowEdge(i);
+      const double hi = lo + h->GetBinWidth(i);
+      if (lo > 0.0) xmin = std::min(xmin, lo);
+      if (hi > 0.0) xmax = std::max(xmax, hi);
+    }
+  };
+  scan(h1);
+  scan(h2);
+  scan(h3);
+  if (!std::isfinite(xmin) || xmax <= xmin) return;
+  const double logmin = std::log10(xmin);
+  const double logmax = std::log10(xmax);
+  const double span = std::max(1e-6, logmax - logmin);
+  const double newmin = std::pow(10.0, logmin - 0.05 * span);
+  const double newmax = std::pow(10.0, logmax + 0.05 * span);
+  h1->GetXaxis()->SetRangeUser(newmin, newmax);
+  h2->GetXaxis()->SetRangeUser(newmin, newmax);
+  h3->GetXaxis()->SetRangeUser(newmin, newmax);
 }
 
 // static std::vector<double> compute_theta_basis(double ptjet,
@@ -495,11 +525,24 @@ int main(int argc, char* argv[]) {
         hgw_base[k] = new TH1D(Form("hThetaW_base_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);
         hgw_total[k] = new TH1D(Form("hThetaW_total_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);
         hgw_target[k] = new TH1D(Form("hThetaW_target_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);             
+        hgw_base[k]->Sumw2();
+        hgw_total[k]->Sumw2();
+        hgw_target[k]->Sumw2();
         hgw_base[k]->SetLineColor(kBlue + 1);
         hgw_total[k]->SetLineColor(kRed + 1);
-        hgw_target[k]->SetLineColor(kGreen + 2);        hgw_base[k]->SetLineWidth(2);
-        hgw_total[k]->SetLineWidth(3);
-        hgw_target[k]->SetLineWidth(3);      
+        hgw_target[k]->SetLineColor(kGreen + 2);
+        hgw_base[k]->SetLineWidth(1);
+        hgw_total[k]->SetLineWidth(1);
+        hgw_target[k]->SetLineWidth(1);
+        hgw_base[k]->SetMarkerStyle(20);
+        hgw_total[k]->SetMarkerStyle(21);
+        hgw_target[k]->SetMarkerStyle(22);
+        hgw_base[k]->SetMarkerSize(0.5);
+        hgw_total[k]->SetMarkerSize(0.5);
+        hgw_target[k]->SetMarkerSize(0.5);
+        hgw_base[k]->SetMarkerColor(kBlue + 1);
+        hgw_total[k]->SetMarkerColor(kRed + 1);
+        hgw_target[k]->SetMarkerColor(kGreen + 2);
       }
 
       // Fill weighted distributions from tweights (use a fresh file/tree to avoid branch conflicts)
@@ -583,7 +626,7 @@ int main(int argc, char* argv[]) {
     
       // }
       // Overlay plots with ratio panel
-      TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 5000, 4000);
+      TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 6500, 5000);
       ctw->Divide(5, 3);
       TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
       legw->AddEntry(hgw_target[0], Form("unbiased target %s", target_tree.c_str()), "l");
@@ -610,9 +653,10 @@ int main(int argc, char* argv[]) {
         gPad->SetLogx();
         gPad->SetTicks(1,1);
         std::cout << "On canvas k=" << k << " then drawing hist with integral " << hgw_target[k]->Integral() << std::endl;
-        hgw_target[k]->Draw("hist");
-        hgw_base[k]->Draw("hist same");
-        hgw_total[k]->Draw("hist same");
+        set_logx_range_from_content(hgw_target[k], hgw_base[k], hgw_total[k]);
+        hgw_target[k]->Draw("E1");
+        hgw_base[k]->Draw("E1 same");
+        hgw_total[k]->Draw("E1 same");
         if (k == 0) legw->Draw();
 
         // Ratio to target (preserve binning)
@@ -626,8 +670,12 @@ int main(int argc, char* argv[]) {
         h_ratio_total->SetTitle("; g_{k}; ratio to target");
         h_ratio_total->SetLineColor(kRed + 1);
         h_ratio_base->SetLineColor(kBlue + 1);
-        h_ratio_total->SetLineWidth(2);
-        h_ratio_base->SetLineWidth(2);
+        h_ratio_total->SetLineWidth(1);
+        h_ratio_base->SetLineWidth(1);
+        h_ratio_total->SetMarkerStyle(21);
+        h_ratio_base->SetMarkerStyle(20);
+        h_ratio_total->SetMarkerSize(0.5);
+        h_ratio_base->SetMarkerSize(0.5);
         h_ratio_total->SetMinimum(0.5);
         h_ratio_total->SetMaximum(1.5);
         h_ratio_total->GetYaxis()->SetNdivisions(505);
@@ -636,8 +684,8 @@ int main(int argc, char* argv[]) {
         h_ratio_total->GetYaxis()->SetLabelSize(0.08);
         h_ratio_total->GetXaxis()->SetTitleSize(0.10);
         h_ratio_total->GetXaxis()->SetLabelSize(0.08);
-        h_ratio_total->Draw("hist");
-        h_ratio_base->Draw("hist same");
+        h_ratio_total->Draw("E1");
+        h_ratio_base->Draw("E1 same");
         TLine *lr = new TLine(h_ratio_total->GetXaxis()->GetXmin(), 1.0,
                               h_ratio_total->GetXaxis()->GetXmax(), 1.0);
         lr->SetLineStyle(2);
