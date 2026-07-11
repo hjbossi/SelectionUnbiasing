@@ -43,6 +43,14 @@
 // subjet_basis.h) is retained only for older constituent-only ntuples,
 // selectable per radius through --subjet-source.
 //
+// Workflow:
+//   (A) ppjets_root.cc  -> tgenBefore ntuple (constituents + subjet_pt_R0pXX)
+//   (B) startBasis.C    -> one file with the biased/reference trees, now
+//                          carrying the forwarded subjet_pt_R0pXX branches
+//   (C) unbias_weights.cc reads that single file, e.g.
+//         ./unbias_weights --input startBasis_output.root --tree tBiased --target-tree tRef ...
+//       (--target-input defaults to --input, so one file suffices).
+//
 // Key flags (see full list in main):
 //   --basis-eec   {off,on}            enable the historical EEC family
 //   --eec-norm    <val>               z normalisation (default 120)
@@ -429,7 +437,10 @@ int main(int argc, char *argv[]) {
     const std::string n_branch     = get_arg(argc, argv, "--n-branch",      "nJets");
     const std::string pt_branch    = get_arg(argc, argv, "--pt-branch",     "pt");
     const std::string wt_branch    = get_arg(argc, argv, "--weight-branch", "weight");
-    const std::string target_input = get_arg(argc, argv, "--target-input");
+    // Source and target may live in one file (the startBasis.C output): if
+    // --target-input is omitted it defaults to --input, so a single file with
+    // --tree tBiased --target-tree tRef is enough.
+    const std::string target_input = get_arg(argc, argv, "--target-input", input);
     const std::string out_name     = get_arg(argc, argv, "--out",           "unbias_weights.root");
     const std::string run_mode     = get_arg(argc, argv, "--mode",          "run");
     const std::string scale_mode   = get_arg(argc, argv, "--scale-basis",   "target");
@@ -462,7 +473,7 @@ int main(int argc, char *argv[]) {
     const double lr_min_val      = std::stod(get_arg(argc, argv, "--lr-min",         "1e-12"));
 
     if (input.empty())        die("--input is required");
-    if (target_input.empty()) die("--target-input is required");
+    if (target_input.empty()) die("--target-input is required");  // only if --input was also empty
     if (run_mode != "run" && run_mode != "debug") die("--mode must be 'run' or 'debug'");
     if (subjet_source != "auto" && subjet_source != "precomputed" && subjet_source != "recluster")
         die("--subjet-source must be 'auto', 'precomputed', or 'recluster'");

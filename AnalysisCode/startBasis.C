@@ -31,6 +31,9 @@
 #include <string>
 #include <iostream>
 #include <random>
+#include <memory>
+
+#include <TString.h>
 
 using namespace std;
 
@@ -106,6 +109,31 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   TTreeReaderValue<std::vector<std::vector<double>>> const_eta(reader, "const_eta");
   TTreeReaderValue<std::vector<std::vector<double>>> const_phi(reader, "const_phi");
 
+  // -----------------------------
+  // Subjet radius scan: forward the precomputed C/A subjets from ppjets_root.cc
+  // -----------------------------
+  // ppjets_root.cc stores subjets over R = 0.01..0.20 in branches
+  // "subjet_pt_R0pXX" (vector<vector<double>>, indexed [jet][subjet]).  For each
+  // such branch present in the input we set up a reader and, below, a matching
+  // per-jet "subjet_pt_R0pXX" output branch (vector<double>) on the flat trees
+  // — mirroring how const_pt/eta/phi are propagated.  Radii absent from the
+  // input (e.g. older ntuples) are skipped, so base behaviour is unchanged when
+  // the branches don't exist.
+  const int nRadiiScan = 20;
+  chain.LoadTree(0);  // make the branch list available for the presence check
+  std::vector<std::string> subjet_names;
+  std::vector<std::unique_ptr<TTreeReaderValue<std::vector<std::vector<double>>>>> subjet_in;
+  for (int iR = 0; iR < nRadiiScan; ++iR) {
+    std::string bname = Form("subjet_pt_R0p%02d", iR + 1);
+    if (!chain.GetBranch(bname.c_str())) continue;   // radius not in this input
+    subjet_names.push_back(bname);
+    subjet_in.emplace_back(
+      std::make_unique<TTreeReaderValue<std::vector<std::vector<double>>>>(
+        reader, subjet_names.back().c_str()));
+  }
+  const size_t nSubR = subjet_names.size();
+  std::cout << "Forwarding " << nSubR << " subjet_pt_R0pXX branch(es)" << std::endl;
+
 
   // Histograms
   const int nBins = 100;
@@ -141,6 +169,10 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   std::vector<double> out_const_pt;
   std::vector<double> out_const_eta;
   std::vector<double> out_const_phi;
+  // one per-jet subjet-pT vector per forwarded radius (indices align with
+  // subjet_names).  Fixed size => &out_subjet_pt[r] stays valid for the whole
+  // run, so the branch addresses below never dangle.
+  std::vector<std::vector<double>> out_subjet_pt(nSubR);
 
   auto setup_tree = [&](TTree *t) {
     t->Branch("pt", &out_pt, "pt/F");
@@ -154,6 +186,8 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
     t->Branch("const_pt", &out_const_pt);
     t->Branch("const_eta", &out_const_eta);
     t->Branch("const_phi", &out_const_phi);
+    for (size_t r = 0; r < nSubR; ++r)
+      t->Branch(subjet_names[r].c_str(), &out_subjet_pt[r]);
   };
   setup_tree(tX);
   setup_tree(tY);
@@ -173,6 +207,7 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
     std::vector<double> const_pt;
     std::vector<double> const_eta;
     std::vector<double> const_phi;
+    std::vector<std::vector<double>> subjet_pt;  // per forwarded radius
   };
   std::vector<JetRec> y_cache;
   std::mt19937 rng(rngSeed);
@@ -194,7 +229,16 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
       double ptRaw = pt[j];
       if (ptRaw <= 0) continue;
       // realistic eta cut
-      if(eta[j] < -2.4 || eta[j] > 2.4) continue; 
+      if(eta[j] < -2.4 || eta[j] > 2.4) continue;
+
+      // gather this jet's forwarded subjets (all present radii) once per jet.
+      // Element-wise assignment keeps the outer vector (and thus the branch
+      // addresses set up above) from reallocating.
+      for (size_t r = 0; r < nSubR; ++r) {
+        const std::vector<std::vector<double>>* sj = subjet_in[r]->Get();
+        out_subjet_pt[r] = (sj && j < (int)sj->size())
+                           ? (*sj)[j] : std::vector<double>();
+      }
 
       if((pTLow < ptRaw) && (ptRaw < pTHigh)){
         hPtX->Fill(ptRaw, *weight);
@@ -256,6 +300,7 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
           rec.const_pt = out_const_pt;
           rec.const_eta = out_const_eta;
           rec.const_phi = out_const_phi;
+          rec.subjet_pt = out_subjet_pt;   // copy all forwarded radii
           y_cache.push_back(std::move(rec));
       }
     }
@@ -290,6 +335,9 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
       out_const_pt = rec.const_pt;
       out_const_eta = rec.const_eta;
       out_const_phi = rec.const_phi;
+      // element-wise restore keeps out_subjet_pt (and the branch addresses) put
+      for (size_t r = 0; r < nSubR && r < rec.subjet_pt.size(); ++r)
+        out_subjet_pt[r] = rec.subjet_pt[r];
       tYp->Fill();
       tBiased->Fill();
     }
