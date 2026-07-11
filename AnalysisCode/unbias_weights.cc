@@ -5,68 +5,56 @@
 // Andres, Bossi, Holguin (arXiv:2501.17219 and "Unbiasing_by_reweighting").
 //
 // Builds:
-//   c++ -std=c++17 -O2 unbias_weights.cc \
-//       $(root-config --cflags --libs) -o unbias_weights
+//   c++ -std=c++17 -O2 unbias_weights.cc $(root-config --cflags --libs) -o unbias_weights
 //
 // =====================================================================
-// VERSION 4 — fixes and improvements
+// VERSION 4 — numerical fixes (unchanged, see below)
 // =====================================================================
-//
-// FIX 1: dR_min = 0.005 cut on all basis functions.
-//   The basis functions involve ΔR^{−A} which diverges as ΔR → 0.
-//   A few jets with nearly-collinear constituent pairs produce extreme
-//   values (g_scaled up to 100,000× the mean), which makes the
-//   exponential weight form exp(−λ·g) catastrophically unstable.
-//   Requiring dR > 0.005 screens these divergences.
-//
-// FIX 2: Auto learning rate (default) = max_step / max(|g_scaled|).
-//   Ensures each Adam step changes the worst-case exponent by at most
-//   max_step (default 0.01).  This is the ONLY safe way to set lr
-//   for this problem because Adam normalizes steps to ±lr regardless
-//   of gradient magnitude.
-//
-// FIX 3: Exponent clamping |λ·g| ≤ max_exp (default 10).
-//   Safety net — no jet weight exceeds exp(10) ≈ 22000× base.
-//
-// FIX 4: Enhanced debug diagnostics (see debug mode output).
+//   FIX 1: dR_min screen on the EEC basis (ΔR^{−A} diverges as ΔR→0).
+//   FIX 2: Auto learning rate = max_step / max(|g_scaled|).
+//   FIX 3: Exponent clamping |λ·g| ≤ max_exp (default 10).
+//   FIX 4: Enhanced debug diagnostics.
 //
 // =====================================================================
-// VERSION 5 — flexible subjet basis input
+// VERSION 6 — fully configurable, multi-family basis
 // =====================================================================
 //
-// The PYTHIA generator (PYTHIA/ppjets_root.cc) now clusters C/A
-// subjets directly at ntuple-production time, over a radius scan
-// R = 0.01, 0.02, ..., 0.20, and stores the resulting subjet pT's in
-// branches named "subjet_pt_R0pXX" (XX = R*100, zero padded) — one
-// vector<vector<double>> per event, indexed [jet][subjet] (or a plain
-// vector<double> per event in "flat", one-jet-per-entry trees, mirroring
-// how const_pt/eta/phi are already handled below).
+// The basis vectors used to construct the moments are now COMPLETELY
+// CONFIGURABLE and may mix two families in arbitrary combination:
 //
-// This version can read those precomputed subjets directly and build
-// the basis functions g_n = Σ_subjets pT_subjet^n from them, instead of
-// reclustering jet constituents on the fly via
-// subjet_basis.h::recluster_ca_subjet_pts().  The old on-the-fly path
-// is kept as a fallback for inputs that don't have the new branches
-// (e.g. older ntuples), so the code works with either generation of
-// input file.
+//   (1) Energy-correlator (EEC) basis functions
+//         g = Σ_{i<k, ΔR<E} ΔR^{-A} [ln ΔR]^B z^m ,  z = pt_i pt_k / norm²
+//       (the historical basis from the older unbias_weights.cc), and
 //
-// New / changed flags:
-//   --subjet-source {auto,precomputed,recluster}   (default: auto)
-//       auto        : use "subjet_pt_R0pXX" if the tree has it, else
-//                     fall back to on-the-fly reclustering.
-//       precomputed : require "subjet_pt_R0pXX"; error out if absent.
-//       recluster   : always recluster from const_pt/eta/phi (old
-//                     behaviour), ignoring any precomputed branches.
-//   --subjet-R now also selects which radius branch to read in
-//       precomputed mode (must be a multiple of 0.01 in [0.01,0.20],
-//       matching the scan written by ppjets_root.cc); it is still
-//       passed to the reclustering routine in recluster mode.
+//   (2) Subjet-pT moment basis functions
+//         g = Σ_{subjets at radius R} pT_subjet^n
+//       i.e. Mellin moments of the subjet-pT spectrum, for one or more
+//       subjet radii R and one or more powers n.
 //
-// The target tree and the source tree are resolved independently (each
-// can be in precomputed or recluster mode on its own), so e.g. a target
-// built from an older constituent-only ntuple can still be compared
-// against a source with precomputed subjets, or vice versa.
+// The definitions, the two families, and the builder live in the new
+// self-contained header  basis_functions.h.  Adding a term is a one-line
+// edit (or a command-line flag); adding a whole new *family* is a new
+// BasisFunction subclass — the reader and optimiser below never change.
 //
+// Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
+// time over a radius scan R = 0.01..0.20 and stores them in branches
+// "subjet_pt_R0pXX".  The subjet-moment functions CONSUME THOSE STORED
+// SUBJETS DIRECTLY (the desired workflow).  A reclustering fallback (via
+// subjet_basis.h) is retained only for older constituent-only ntuples,
+// selectable per radius through --subjet-source.
+//
+// Key flags (see full list in main):
+//   --basis-eec   {off,on}            enable the historical EEC family
+//   --eec-norm    <val>               z normalisation (default 120)
+//   --subjet-radii  "0.1,0.05"        subjet radii for the moment family
+//   --subjet-powers "3,4,...,10"      powers n for the moment family
+//   --subjet-R    <R>                 single-radius shortcut (default 0.1)
+//   --subjet-source {auto,precomputed,recluster}   how to obtain subjets
+//   --dR-min      <val>               EEC small-angle screen (default 1e-3)
+//
+// The default basis (no basis flags) reproduces the previous analysis:
+// C/A R=0.1 subjet pT power sums, n = 3..10 — now sourced from the stored
+// subjets rather than on-the-fly reclustering.
 // =====================================================================
 
 #include <TFile.h>
@@ -74,20 +62,26 @@
 #include <TH1.h>
 #include <TVector2.h>
 
-#include "subjet_basis.h"
+#include "basis_functions.h"   // configurable multi-family basis framework
+#include "subjet_basis.h"      // recluster_ca_subjet_pts (reclustering fallback)
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#define MAXJ 100  // matches the fixed jet-array size written by ppjets_root.cc
 
 static void die(const std::string &msg) {
     std::cerr << "error: " << msg << std::endl;
@@ -103,86 +97,220 @@ static std::string get_arg(int argc, char *argv[],
     return def;
 }
 
-// =====================================================================
-// BASIS FUNCTION DEFINITIONS + EVALUATION
-// =====================================================================
-// The basis (Cambridge/Aachen R=0.1 subjet pT power sums, g_n = Σ pT^n
-// for n = 3..10) and its self-contained reclustering live in
-// subjet_basis.h, shared with the plotting tool so the fit and the
-// validation plots use an identical definition.
-
-// =====================================================================
-// Direct-from-file subjet basis support (VERSION 5)
-// =====================================================================
-// ppjets_root.cc now clusters C/A subjets at ntuple-production time
-// over radii R = 0.01, 0.02, ..., 0.20, storing them in branches
-// "subjet_pt_R0pXX".  These helpers let us read those subjets directly
-// and evaluate the basis functions without reclustering.
-
-enum class SubjetMode { Recluster, Precomputed };
-
-// Map a radius in [0.01, 0.20] (step 0.01) to the "R0pXX" branch tag
-// used by ppjets_root.cc (e.g. 0.05 -> "R0p05", 0.10 -> "R0p10").
-static std::string subjet_radius_tag(double R) {
-    const int rTag = (int)std::lround(R / 0.01);
-    if (rTag < 1 || rTag > 20 || std::fabs(R - rTag * 0.01) > 1e-6)
-        die("--subjet-R must be a multiple of 0.01 in [0.01,0.20] to "
-            "match the radius scan written by ppjets_root.cc "
-            "(use --subjet-source recluster to bypass this requirement)");
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "R0p%02d", rTag);
-    return std::string(buf);
-}
-
-static inline std::string subjet_pt_branch_name(const std::string &tag) {
-    return "subjet_pt_" + tag;
-}
-
-// Evaluate basis functions g_n = Σ_subjets pT^n directly from a
-// pre-clustered list of subjet pT values — no reclustering needed.
-static std::vector<double> evaluate_basis_from_subjet_pts(
-        const std::vector<BasisFuncDef> &basis,
-        double ptjet,
-        const std::vector<double> &subjet_pt)
-{
-    const int nb = (int)basis.size();
-    std::vector<double> g(nb, 0.0);
-    if (ptjet <= 0.0) return g;
-    for (const double pt : subjet_pt) {
-        if (pt <= 0.0) continue;
-        for (int j = 0; j < nb; ++j)
-            g[j] += std::pow(pt, (double)basis[j].n);
+// Parse a comma-separated list of numbers, e.g. "3,4,5" or "0.1, 0.05".
+static std::vector<double> parse_doubles(const std::string &s) {
+    std::vector<double> out;
+    std::stringstream ss(s);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        const size_t a = tok.find_first_not_of(" \t");
+        if (a == std::string::npos) continue;
+        const size_t b = tok.find_last_not_of(" \t");
+        out.push_back(std::stod(tok.substr(a, b - a + 1)));
     }
-    return g;
+    return out;
 }
 
-// Decide, per-tree, whether to read precomputed subjets or recluster
-// from constituents, honouring --subjet-source and printing the choice.
-static SubjetMode resolve_subjet_mode(TTree *t,
-                                       const std::string &branch_name,
-                                       const std::string &requested,
-                                       const std::string &tree_label)
-{
-    const bool have_precomp = (t->GetBranch(branch_name.c_str()) != nullptr);
+// =====================================================================
+// Per-tree input plan
+// =====================================================================
+// For each stored subjet radius the basis needs, decide (per tree) whether
+// to read the precomputed branch or to recluster from constituents, honouring
+// --subjet-source.  Also records whether constituents must be loaded at all
+// (either because an EEC term needs them, or because a radius is reclustered).
+struct RadiusPlan {
+    std::map<int, bool> precomputed;      // rtag -> true=precomputed / false=recluster
+    bool                need_constituents = false;
+};
 
-    SubjetMode mode;
-    if (requested == "precomputed") {
-        if (!have_precomp)
-            die(tree_label + ": --subjet-source precomputed requested but "
-                "branch '" + branch_name + "' was not found");
-        mode = SubjetMode::Precomputed;
-    } else if (requested == "recluster") {
-        mode = SubjetMode::Recluster;
-    } else { // "auto"
-        mode = have_precomp ? SubjetMode::Precomputed : SubjetMode::Recluster;
+static RadiusPlan plan_tree_inputs(TTree *t,
+                                   const BasisInputs &req,
+                                   const std::string &source_mode,
+                                   const std::string &label) {
+    RadiusPlan plan;
+    plan.need_constituents = req.constituents;
+
+    for (const int rtag : req.subjet_rtags) {
+        const double R  = radius_from_tag(rtag);
+        const std::string bn = subjet_branch_name("pt", R);
+        const bool have = (t->GetBranch(bn.c_str()) != nullptr);
+
+        bool precomp;
+        if (source_mode == "precomputed") {
+            if (!have)
+                die(label + ": --subjet-source precomputed but branch '" + bn +
+                    "' was not found");
+            precomp = true;
+        } else if (source_mode == "recluster") {
+            precomp = false;
+        } else {  // auto
+            precomp = have;
+        }
+        plan.precomputed[rtag] = precomp;
+        if (!precomp) plan.need_constituents = true;
+
+        std::cout << "  [" << label << "] subjet R=" << std::setprecision(2)
+                  << std::fixed << R << std::setprecision(6)
+                  << " -> " << (precomp ? ("precomputed '" + bn + "'")
+                                        : std::string("recluster from const_pt/eta/phi"))
+                  << std::endl;
     }
+    if (req.constituents)
+        std::cout << "  [" << label << "] EEC terms read const_pt/eta/phi" << std::endl;
 
-    std::cout << "  [" << tree_label << "] subjet source = "
-              << (mode == SubjetMode::Precomputed
-                      ? ("precomputed (branch '" + branch_name + "')")
-                      : std::string("on-the-fly recluster (const_pt/eta/phi)"))
-              << std::endl;
-    return mode;
+    if (plan.need_constituents &&
+        !(t->GetBranch("const_pt") && t->GetBranch("const_eta") &&
+          t->GetBranch("const_phi")))
+        die(label + ": constituents required (EEC and/or reclustering) but "
+            "const_pt/const_eta/const_phi branches are missing");
+
+    return plan;
+}
+
+// =====================================================================
+// Generic per-jet reader (shared by the target and source passes)
+// =====================================================================
+// Iterates every selected jet of `t`, assembles a JetData (constituents +
+// stored/reclustered subjets for the required radii), and invokes
+//   cb(const JetData& jd, double pt, double weight, int source)
+// exactly once per selected jet.  Handles both "array" trees (nJets + arrays,
+// e.g. tgenBefore from ppjets_root.cc) and "flat" one-jet-per-entry trees
+// (e.g. the toy tX/tY/tRef/tBiased trees).  This single helper replaces the
+// four near-identical read blocks the previous version carried.
+template <class JetFn>
+static void read_tree_jets(TTree *t,
+                           const std::string &n_branch,
+                           const std::string &pt_branch,
+                           const std::string &wt_branch,
+                           double pt_min, double pt_max,
+                           const BasisInputs &req,
+                           const RadiusPlan &plan,
+                           double dR_min,
+                           JetFn &&cb) {
+    const bool array_style = (t->GetBranch(n_branch.c_str()) != nullptr);
+    const bool has_source  = (t->GetBranch("source") != nullptr);
+    const bool need_const  = plan.need_constituents;
+
+    // Scratch storage for reclustered subjet lists (kept alive across the cb
+    // call; JetData holds pointers into it).
+    std::map<int, std::vector<double>> recl;
+
+    // ---- assemble one jet's JetData and dispatch --------------------
+    // `get_precomp(rtag)` returns the precomputed subjet-pT list for this jet
+    // (or nullptr if unavailable); constituent lists are passed explicitly.
+    auto emit = [&](double jetpt, double weight, int source,
+                    const std::vector<double> *cpt,
+                    const std::vector<double> *ceta,
+                    const std::vector<double> *cphi,
+                    const std::function<const std::vector<double> *(int)> &get_precomp) {
+        JetData jd;
+        jd.pt = jetpt;
+        if (need_const) { jd.const_pt = cpt; jd.const_eta = ceta; jd.const_phi = cphi; }
+
+        bool ok = true;
+        for (const auto &kv : plan.precomputed) {
+            const int  rtag    = kv.first;
+            const bool precomp = kv.second;
+            if (precomp) {
+                const std::vector<double> *sp = get_precomp(rtag);
+                if (!sp) { ok = false; break; }          // aligned entry missing
+                jd.subjet_pt[rtag] = sp;
+            } else {
+                if (!cpt || !ceta || !cphi) { ok = false; break; }
+                recl[rtag] = recluster_ca_subjet_pts(*cpt, *ceta, *cphi,
+                                                     radius_from_tag(rtag));
+                jd.subjet_pt[rtag] = &recl[rtag];
+            }
+        }
+        if (!ok) return;
+
+        if (req.constituents) build_constituent_pairs(jd, dR_min);
+        cb(static_cast<const JetData &>(jd), jetpt, weight, source);
+    };
+
+    const Long64_t ne = t->GetEntries();
+
+    if (array_style) {
+        int   nJ = 0;
+        float pt[MAXJ] = {0};
+        float wt = 1.0f;
+        int   src = -1;
+        std::vector<std::vector<double>> *cp = nullptr, *ce = nullptr, *cf = nullptr;
+        std::map<int, std::vector<std::vector<double>> *> sjb;  // precomputed subjet branches
+
+        t->SetBranchAddress(n_branch.c_str(), &nJ);
+        t->SetBranchAddress(pt_branch.c_str(), pt);
+        t->SetBranchAddress(wt_branch.c_str(), &wt);
+        if (has_source) t->SetBranchAddress("source", &src);
+        if (need_const) {
+            t->SetBranchAddress("const_pt",  &cp);
+            t->SetBranchAddress("const_eta", &ce);
+            t->SetBranchAddress("const_phi", &cf);
+        }
+        for (const auto &kv : plan.precomputed)
+            if (kv.second) {
+                sjb[kv.first] = nullptr;
+                t->SetBranchAddress(subjet_branch_name("pt", radius_from_tag(kv.first)).c_str(),
+                                    &sjb[kv.first]);
+            }
+
+        for (Long64_t ev = 0; ev < ne; ++ev) {
+            t->GetEntry(ev);
+            const int nJc = std::min(nJ, MAXJ);
+            for (int j = 0; j < nJc; ++j) {
+                const double x = pt[j];
+                if (x < pt_min || x > pt_max) continue;
+
+                const std::vector<double> *cpt = nullptr, *ceta = nullptr, *cphi = nullptr;
+                if (need_const) {
+                    if (!cp || !ce || !cf) die("missing constituent branches");
+                    if (j >= (int)cp->size() || j >= (int)ce->size() || j >= (int)cf->size())
+                        continue;
+                    cpt = &cp->at(j); ceta = &ce->at(j); cphi = &cf->at(j);
+                }
+                emit(x, (double)wt, src, cpt, ceta, cphi,
+                     [&](int rtag) -> const std::vector<double> * {
+                         auto it = sjb.find(rtag);
+                         if (it == sjb.end() || !it->second ||
+                             j >= (int)it->second->size())
+                             return nullptr;
+                         return &it->second->at(j);
+                     });
+            }
+        }
+    } else {
+        float pv = 0.0f;
+        float wt = 1.0f;
+        int   src = -1;
+        std::vector<double> *cp = nullptr, *ce = nullptr, *cf = nullptr;
+        std::map<int, std::vector<double> *> sjb;
+
+        t->SetBranchAddress(pt_branch.c_str(), &pv);
+        t->SetBranchAddress(wt_branch.c_str(), &wt);
+        if (has_source) t->SetBranchAddress("source", &src);
+        if (need_const) {
+            t->SetBranchAddress("const_pt",  &cp);
+            t->SetBranchAddress("const_eta", &ce);
+            t->SetBranchAddress("const_phi", &cf);
+        }
+        for (const auto &kv : plan.precomputed)
+            if (kv.second) {
+                sjb[kv.first] = nullptr;
+                t->SetBranchAddress(subjet_branch_name("pt", radius_from_tag(kv.first)).c_str(),
+                                    &sjb[kv.first]);
+            }
+
+        for (Long64_t ev = 0; ev < ne; ++ev) {
+            t->GetEntry(ev);
+            const double x = pv;
+            if (x < pt_min || x > pt_max) continue;
+            emit(x, (double)wt, src, cp, ce, cf,
+                 [&](int rtag) -> const std::vector<double> * {
+                     auto it = sjb.find(rtag);
+                     return (it == sjb.end()) ? nullptr : it->second;
+                 });
+        }
+    }
 }
 
 // =====================================================================
@@ -308,10 +436,16 @@ int main(int argc, char *argv[]) {
     const std::string lr_spec      = get_arg(argc, argv, "--adam-lr",       "auto");
     const std::string subjet_source = get_arg(argc, argv, "--subjet-source", "auto");
 
+    // ---- Basis configuration flags (VERSION 6) ----
+    const std::string basis_eec_s  = get_arg(argc, argv, "--basis-eec",     "off");
+    const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",  "");
+    const std::string subjet_powers_s = get_arg(argc, argv, "--subjet-powers", "");
+
     const double pt_min  = std::stod(get_arg(argc, argv, "--pt-min", "0.0"));
     const double pt_max  = std::stod(get_arg(argc, argv, "--pt-max", "1e9"));
     const double dR_min  = std::stod(get_arg(argc, argv, "--dR-min", "0.001"));
     const double subjet_R = std::stod(get_arg(argc, argv, "--subjet-R", "0.1"));
+    const double eec_norm = std::stod(get_arg(argc, argv, "--eec-norm", "120.0"));
 
     const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "200000"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
@@ -333,25 +467,55 @@ int main(int argc, char *argv[]) {
     if (subjet_source != "auto" && subjet_source != "precomputed" && subjet_source != "recluster")
         die("--subjet-source must be 'auto', 'precomputed', or 'recluster'");
 
-    // ---- Basis functions ----
-    std::vector<BasisFuncDef> basis = get_default_basis();
+    // =================================================================
+    // Build the (configurable) basis.
+    // -----------------------------------------------------------------
+    // Start from the header defaults (BasisConfig / build_basis in
+    // basis_functions.h), then apply the command-line overrides below.
+    // To hard-code a bespoke basis (e.g. per-radius power lists, custom
+    // EEC terms), edit BasisConfig in basis_functions.h and comment out
+    // the CLI-override block marked >>> below.
+    // =================================================================
+    BasisConfig cfg;
+    cfg.use_eec    = (basis_eec_s == "on" || basis_eec_s == "1" || basis_eec_s == "true");
+    cfg.eec_norm   = eec_norm;
+    cfg.eec_dR_min = dR_min;
+
+    // >>> CLI override of the subjet-moment family (radii × powers) <<<
+    {
+        std::vector<double> radii = subjet_radii_s.empty()
+            ? std::vector<double>{ subjet_R }
+            : parse_doubles(subjet_radii_s);
+        std::vector<double> powers = subjet_powers_s.empty()
+            ? std::vector<double>{ 3, 4, 5, 6, 7, 8, 9, 10 }
+            : parse_doubles(subjet_powers_s);
+        cfg.subjet_moments.clear();
+        for (const double R : radii) {
+            if (R <= 0.0) die("--subjet-radii entries must be positive");
+            cfg.subjet_moments.push_back({ R, powers });
+        }
+    }
+    // >>> end CLI override <<<
+
+    Basis basis = build_basis(cfg);
     const int nphys = (int)basis.size();
+    if (nphys == 0) die("empty basis: enable EEC and/or subjet moments");
 
-    // Radius tag / branch name used when reading precomputed subjets.
-    // (Computed unconditionally so a clear error fires immediately if
-    // --subjet-R doesn't match the ppjets_root.cc scan, rather than
-    // failing deep inside the target/source readers below.)
-    const std::string subjet_tag         = subjet_radius_tag(subjet_R);
-    const std::string subjet_branch_name = subjet_pt_branch_name(subjet_tag);
+    const BasisInputs req = basis_inputs(basis);
 
-    std::cout << "=== Physics basis functions (" << nphys << ") ===" << std::endl;
+    // Primary subjet radius (smallest requested) — used for the metadata
+    // and for the optional per-jet subjet_pt output branch.
+    const bool   have_subjets = !req.subjet_rtags.empty();
+    const double primary_R    = have_subjets ? radius_from_tag(*req.subjet_rtags.begin()) : 0.0;
+
+    std::cout << "=== Basis functions (" << nphys << ") ===" << std::endl;
     for (int j = 0; j < nphys; ++j)
-        std::cout << "  [" << j << "] " << basis[j].label << std::endl;
+        std::cout << "  [" << j << "] " << basis[j]->label() << std::endl;
     std::cout << "  [N] normalisation (analytic)" << std::endl;
-    std::cout << "  subjet_R = " << subjet_R << " (C/A, tag=" << subjet_tag << ")" << std::endl;
-    std::cout << "  --subjet-source = " << subjet_source
-              << "  (precomputed branch would be '" << subjet_branch_name << "')"
-              << std::endl << std::endl;
+    std::cout << "  signature = " << basis_signature(cfg) << std::endl;
+    std::cout << "  EEC family: " << (cfg.use_eec ? "on" : "off")
+              << " (norm=" << cfg.eec_norm << ", dR_min=" << cfg.eec_dR_min << ")" << std::endl;
+    std::cout << "  --subjet-source = " << subjet_source << std::endl << std::endl;
 
     // ---- Read TARGET sample ----
     std::vector<double> c(nphys, 0.0);
@@ -362,70 +526,15 @@ int main(int argc, char *argv[]) {
         if (tf.IsZombie()) die("failed to open target file: " + target_input);
         TTree *tt = dynamic_cast<TTree*>(tf.Get(tgt_tree_n.c_str()));
         if (!tt) die("failed to find target tree: " + tgt_tree_n);
-        const Long64_t te = tt->GetEntries();
-        const bool tev = (tt->GetBranch(n_branch.c_str()) != nullptr);
-        const SubjetMode tmode = resolve_subjet_mode(tt, subjet_branch_name, subjet_source, "target");
 
-        if (tev) {
-            int tnJ = 0; float tpt[100] = {0}; float tw = 1.0f;
-            std::vector<std::vector<double>> *tcp=0,*tce=0,*tcf=0,*tsj=0;
-            tt->SetBranchAddress(n_branch.c_str(), &tnJ);
-            tt->SetBranchAddress(pt_branch.c_str(), tpt);
-            tt->SetBranchAddress(wt_branch.c_str(), &tw);
-            if (tmode == SubjetMode::Precomputed) {
-                tt->SetBranchAddress(subjet_branch_name.c_str(), &tsj);
-            } else {
-                tt->SetBranchAddress("const_pt", &tcp);
-                tt->SetBranchAddress("const_eta", &tce);
-                tt->SetBranchAddress("const_phi", &tcf);
-            }
-            for (Long64_t ev = 0; ev < te; ++ev) {
-                tt->GetEntry(ev);
-                for (int j = 0; j < tnJ; ++j) {
-                    double x = tpt[j];
-                    if (x < pt_min || x > pt_max) continue;
-                    std::vector<double> gv;
-                    if (tmode == SubjetMode::Precomputed) {
-                        if (!tsj) die("missing target subjet branch: " + subjet_branch_name);
-                        if (j >= (int)tsj->size()) continue;
-                        gv = evaluate_basis_from_subjet_pts(basis, x, tsj->at(j));
-                    } else {
-                        if (!tcp||!tce||!tcf) die("missing target constituent branches");
-                        if (j>=(int)tcp->size()||j>=(int)tce->size()||j>=(int)tcf->size()) continue;
-                        gv = evaluate_basis(basis, x, tcp->at(j), tce->at(j), tcf->at(j), subjet_R);
-                    }
-                    double w = (double)tw; tgt_sumW += w; ++tgt_njets;
-                    for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
-                }
-            }
-        } else {
-            float tp = 0.0f; float tw = 1.0f;
-            std::vector<double> *tcp=0,*tce=0,*tcf=0,*tsj=0;
-            tt->SetBranchAddress(pt_branch.c_str(), &tp);
-            tt->SetBranchAddress(wt_branch.c_str(), &tw);
-            if (tmode == SubjetMode::Precomputed) {
-                tt->SetBranchAddress(subjet_branch_name.c_str(), &tsj);
-            } else {
-                tt->SetBranchAddress("const_pt", &tcp);
-                tt->SetBranchAddress("const_eta", &tce);
-                tt->SetBranchAddress("const_phi", &tcf);
-            }
-            for (Long64_t ev = 0; ev < te; ++ev) {
-                tt->GetEntry(ev);
-                double x = tp;
-                if (x < pt_min || x > pt_max) continue;
-                std::vector<double> gv;
-                if (tmode == SubjetMode::Precomputed) {
-                    if (!tsj) die("missing target subjet branch: " + subjet_branch_name);
-                    gv = evaluate_basis_from_subjet_pts(basis, x, *tsj);
-                } else {
-                    if (!tcp||!tce||!tcf) die("missing target constituent branches");
-                    gv = evaluate_basis(basis, x, *tcp, *tce, *tcf, subjet_R);
-                }
-                double w = (double)tw; tgt_sumW += w; ++tgt_njets;
-                for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
-            }
-        }
+        const RadiusPlan tplan = plan_tree_inputs(tt, req, subjet_source, "target");
+        read_tree_jets(tt, n_branch, pt_branch, wt_branch, pt_min, pt_max,
+                       req, tplan, dR_min,
+                       [&](const JetData &jd, double /*x*/, double w, int /*src*/) {
+                           const std::vector<double> gv = evaluate_basis(basis, jd);
+                           tgt_sumW += w; ++tgt_njets;
+                           for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
+                       });
         tf.Close();
     }
     if (tgt_sumW <= 0.0) die("target has non-positive weight sum");
@@ -442,10 +551,6 @@ int main(int argc, char *argv[]) {
     if (in_file.IsZombie()) die("failed to open: " + input);
     TTree *tree = dynamic_cast<TTree*>(in_file.Get(tree_name.c_str()));
     if (!tree) die("failed to find tree: " + tree_name);
-    const Long64_t ne = tree->GetEntries();
-    const bool iev = (tree->GetBranch(n_branch.c_str()) != nullptr);
-    const bool hsb = (tree->GetBranch("source") != nullptr);
-    const SubjetMode smode = resolve_subjet_mode(tree, subjet_branch_name, subjet_source, "source");
 
     double wX_an = 0, wYp_an = 0; bool has_an = false;
     if (TTree *tW = dynamic_cast<TTree*>(in_file.Get("tWeights"))) {
@@ -457,79 +562,27 @@ int main(int argc, char *argv[]) {
     std::vector<double> pts, base_w;
     std::vector<std::vector<double>> gvals;
     std::vector<int> sources;
-    std::vector<std::vector<double>> ocp, oce, ocf;  // constituents, recluster mode (for output)
-    std::vector<std::vector<double>> osj;            // subjet pT's, precomputed mode (for output)
+    std::vector<std::vector<double>> ocp, oce, ocf;  // constituents (for output, if read)
+    std::vector<std::vector<double>> osj;            // primary-radius subjet pT's (for output)
 
-    pts.reserve(ne*2); base_w.reserve(ne*2);
+    pts.reserve((size_t)tree->GetEntries()*2); base_w.reserve((size_t)tree->GetEntries()*2);
 
-    if (iev) {
-        int nJ=0; float pt[100]={0}; float wt=1.0f; int src=-1;
-        std::vector<std::vector<double>> *cp=0,*ce=0,*cf=0,*sj=0;
-        tree->SetBranchAddress(n_branch.c_str(), &nJ);
-        tree->SetBranchAddress(pt_branch.c_str(), pt);
-        tree->SetBranchAddress(wt_branch.c_str(), &wt);
-        if (smode == SubjetMode::Precomputed) {
-            tree->SetBranchAddress(subjet_branch_name.c_str(), &sj);
-        } else {
-            bool sc = tree->GetBranch("const_pt") && tree->GetBranch("const_eta")
-                      && tree->GetBranch("const_phi");
-            if (!sc) die("source: recluster mode requires const_pt/const_eta/const_phi branches");
-            tree->SetBranchAddress("const_pt",&cp);
-            tree->SetBranchAddress("const_eta",&ce);
-            tree->SetBranchAddress("const_phi",&cf);
-        }
-        if (hsb) tree->SetBranchAddress("source", &src);
-        for (Long64_t ev=0; ev<ne; ++ev) {
-            tree->GetEntry(ev);
-            for (int j=0; j<nJ; ++j) {
-                double x=pt[j]; if (x<pt_min||x>pt_max) continue;
-                if (smode == SubjetMode::Precomputed) {
-                    if (!sj) die("missing source subjet branch: " + subjet_branch_name);
-                    if (j>=(int)sj->size()) continue;
-                    pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-                    gvals.push_back(evaluate_basis_from_subjet_pts(basis, x, sj->at(j)));
-                    osj.push_back(sj->at(j));
-                } else {
-                    if (!cp||!ce||!cf) die("missing constituent branches");
-                    if (j>=(int)cp->size()||j>=(int)ce->size()||j>=(int)cf->size()) continue;
-                    pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-                    gvals.push_back(evaluate_basis(basis,x,cp->at(j),ce->at(j),cf->at(j),subjet_R));
-                    ocp.push_back(cp->at(j)); oce.push_back(ce->at(j)); ocf.push_back(cf->at(j));
-                }
-            }
-        }
-    } else {
-        float pv=0; float wt=1.0f; int src=-1;
-        std::vector<double> *cp=0,*ce=0,*cf=0,*sj=0;
-        tree->SetBranchAddress(pt_branch.c_str(), &pv);
-        tree->SetBranchAddress(wt_branch.c_str(), &wt);
-        if (smode == SubjetMode::Precomputed) {
-            tree->SetBranchAddress(subjet_branch_name.c_str(), &sj);
-        } else {
-            bool sc = tree->GetBranch("const_pt") && tree->GetBranch("const_eta")
-                      && tree->GetBranch("const_phi");
-            if (!sc) die("source: recluster mode requires const_pt/const_eta/const_phi branches");
-            tree->SetBranchAddress("const_pt",&cp);
-            tree->SetBranchAddress("const_eta",&ce);
-            tree->SetBranchAddress("const_phi",&cf);
-        }
-        if (hsb) tree->SetBranchAddress("source", &src);
-        for (Long64_t ev=0; ev<ne; ++ev) {
-            tree->GetEntry(ev);
-            double x=pv; if (x<pt_min||x>pt_max) continue;
-            if (smode == SubjetMode::Precomputed) {
-                if (!sj) die("missing source subjet branch: " + subjet_branch_name);
-                pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-                gvals.push_back(evaluate_basis_from_subjet_pts(basis, x, *sj));
-                osj.push_back(*sj);
-            } else {
-                if (!cp||!ce||!cf) die("missing constituent branches");
-                pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-                gvals.push_back(evaluate_basis(basis,x,*cp,*ce,*cf,subjet_R));
-                ocp.push_back(*cp); oce.push_back(*ce); ocf.push_back(*cf);
-            }
-        }
-    }
+    const RadiusPlan splan = plan_tree_inputs(tree, req, subjet_source, "source");
+    read_tree_jets(tree, n_branch, pt_branch, wt_branch, pt_min, pt_max,
+                   req, splan, dR_min,
+                   [&](const JetData &jd, double x, double w, int src) {
+                       pts.push_back(x); base_w.push_back(w); sources.push_back(src);
+                       gvals.push_back(evaluate_basis(basis, jd));
+                       if (jd.const_pt && jd.const_eta && jd.const_phi) {
+                           ocp.push_back(*jd.const_pt);
+                           oce.push_back(*jd.const_eta);
+                           ocf.push_back(*jd.const_phi);
+                       }
+                       if (have_subjets) {
+                           const std::vector<double> *sp = jd.subjets_at(primary_R);
+                           if (sp) osj.push_back(*sp);
+                       }
+                   });
 
     const size_t N = pts.size();
     if (N == 0) die("no jets passed selection");
@@ -557,7 +610,7 @@ int main(int argc, char *argv[]) {
     // ---- Basis statistics & auto lr ----
     double max_abs_g = 0.0;
     {
-        std::cout << "Basis stats (scaled, subjet_R=" << subjet_R << "):" << std::endl;
+        std::cout << "Basis stats (scaled):" << std::endl;
         for (int j=0; j<nphys; ++j) {
             double mn=1e30, mx=-1e30, su=0, su2=0;
             int nzero = 0;
@@ -805,17 +858,15 @@ int main(int argc, char *argv[]) {
 
     TTree tm("meta","fit metadata");
     auto la = lam; la.push_back(lam_norm);
-    std::string bl = "subjet_ca_ptpow_3to10+norm_analytic";
-    std::string subjet_src_label = (smode == SubjetMode::Precomputed)
-        ? ("precomputed:" + subjet_branch_name)
-        : "recluster:on-the-fly";
+    std::string bl = basis_signature(cfg) + "+norm_analytic";
+    std::string subjet_src_label = subjet_source;
     tm.Branch("lambda",&la); tm.Branch("lambda_norm",&lam_norm,"lambda_norm/D");
     tm.Branch("basis",&bl);
     tm.Branch("subjet_source",&subjet_src_label);
     tm.Branch("pt_min",const_cast<double*>(&pt_min),"pt_min/D");
     tm.Branch("pt_max",const_cast<double*>(&pt_max),"pt_max/D");
     tm.Branch("best_loss",const_cast<double*>(&best_loss),"best_loss/D");
-    double sr_out = subjet_R;
+    double sr_out = primary_R;
     tm.Branch("subjet_R",&sr_out,"subjet_R/D");
     tm.Fill();
     tw.Write(); tm.Write(); of.Close(); in_file.Close();
@@ -824,7 +875,7 @@ int main(int argc, char *argv[]) {
     std::cout << "\nFinal lambdas:" << std::endl;
     for (int j=0; j<nphys; ++j)
         std::cout << "  [" << j << "] " << std::setw(14) << lam[j]
-                  << "  (" << basis[j].label << ")" << std::endl;
+                  << "  (" << basis[j]->label() << ")" << std::endl;
     std::cout << "  lam_norm = " << lam_norm << std::endl;
 
     double cS=0,cS2=0; std::vector<double> cd(nphys,0);
