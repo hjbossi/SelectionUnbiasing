@@ -19,8 +19,6 @@
 #include <TMath.h>
 #include <TLine.h>
 
-#include "subjet_basis.h"
-
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
@@ -42,12 +40,14 @@ static std::string get_arg(int argc, char* argv[], const std::string &flag, cons
 }
 
 // =====================================================================
-// BASIS FUNCTION DEFINITIONS + EVALUATION
+// BASIS VECTORS
 // =====================================================================
-// The basis (Cambridge/Aachen R=0.1 subjet pT power sums, g_n = Σ pT^n
-// for n = 3..10) and its self-contained reclustering live in
-// subjet_basis.h, shared with unbias_weights.cc so the fit and these
-// validation plots use an identical definition.
+// This macro no longer re-derives the basis.  unbias_weights.cc writes the
+// per-jet basis values g_k directly into its output — source jets in
+// tweights.g_basis, target jets in the tbasis_target tree, with per-function
+// titles in meta.basis_labels — so the basis-vector plots below always match
+// exactly the basis that was fit (EEC terms, several subjet radii, custom
+// powers, ...), with no reclustering and no dependence on the old fixed basis.
 
 static void set_logx_range_from_content(TH1D *h1, TH1D *h2, TH1D *h3) {
   double xmin = std::numeric_limits<double>::infinity();
@@ -392,234 +392,161 @@ int main(int argc, char* argv[]) {
   in.Close();
   tfin.Close();
   {
-    // Weighted theta-basis distributions from tweights vs target tree (if constituents available)
+    // Basis-vector closure plots (read straight from the fit output)
     {
       
-      std::vector<BasisFuncDef> basis = get_default_basis();
-      const int nphys = (int)basis.size();
+      // ---------------------------------------------------------------
+      // Basis-vector closure plots, read STRAIGHT from the fit output:
+      //   source jets : tweights.g_basis        (weighted by w_base, w_total)
+      //   target jets : tbasis_target.g_basis    (weighted by weight)
+      //   titles      : meta.basis_labels
+      // No basis is re-derived here, so these plots always match the fit
+      // exactly (EEC terms, multiple subjet radii, custom powers, ...).
+      // ---------------------------------------------------------------
+      TH1::AddDirectory(kFALSE);   // histos below are transient, not file-owned
+      TFile inb(input.c_str(), "READ");
+      TTree *tsrc = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("tweights"));
+      TTree *ttar = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("tbasis_target"));
+      TTree *tmet = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("meta"));
 
-      int nbins = 20; // Desired number of log bins
-
-       
-      TH1D *hgw_base[nphys];
-      TH1D *hgw_total[nphys];
-      TH1D *hgw_target[nphys];
-      std::vector<double> gmin_base(nphys, std::numeric_limits<double>::infinity());
-      std::vector<double> gmax_base(nphys, 0.0);
-      std::vector<double> gmin_total(nphys, std::numeric_limits<double>::infinity());
-      std::vector<double> gmax_total(nphys, 0.0);
-      std::vector<double> gmin_target(nphys, std::numeric_limits<double>::infinity());
-      std::vector<double> gmax_target(nphys, 0.0);
-      for (int k = 0; k < nphys; ++k) {
-        // g_n = Σ pT^n grows steeply with n; size the log range so the
-        // edges always cover the data (display auto-ranges below).
-        const int nexp = basis[k].n;
-        double logmin = -2.0;
-        double logmax = nexp * TMath::Log10(300.0) + 2.0;
-        double binwidth = (logmax - logmin) / nbins;
-        double *edges = new double[nbins + 1];
-
-        for (int i = 0; i <= nbins; i++) {
-            edges[i] = pow(10, logmin + i * binwidth);
-        }
-
-        hgw_base[k] = new TH1D(Form("hThetaW_base_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
-        hgw_total[k] = new TH1D(Form("hThetaW_total_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
-        hgw_target[k] = new TH1D(Form("hThetaW_target_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
-        hgw_base[k]->Sumw2();
-        hgw_total[k]->Sumw2();
-        hgw_target[k]->Sumw2();
-        hgw_base[k]->SetLineColor(kBlue + 1);
-        hgw_total[k]->SetLineColor(kRed + 1);
-        hgw_target[k]->SetLineColor(kGreen + 2);
-        hgw_base[k]->SetLineWidth(1);
-        hgw_total[k]->SetLineWidth(1);
-        hgw_target[k]->SetLineWidth(1);
-        hgw_base[k]->SetMarkerStyle(20);
-        hgw_total[k]->SetMarkerStyle(21);
-        hgw_target[k]->SetMarkerStyle(22);
-        hgw_base[k]->SetMarkerSize(0.5);
-        hgw_total[k]->SetMarkerSize(0.5);
-        hgw_target[k]->SetMarkerSize(0.5);
-        hgw_base[k]->SetMarkerColor(kBlue + 1);
-        hgw_total[k]->SetMarkerColor(kRed + 1);
-        hgw_target[k]->SetMarkerColor(kGreen + 2);
-      }
-
-      // Fill weighted distributions from tweights (use a fresh file/tree to avoid branch conflicts)
-      TFile in2(input.c_str(), "READ");
-      TTree *tw2 = in2.IsZombie() ? nullptr : dynamic_cast<TTree*>(in2.Get("tweights"));
-      if (!tw2 || !tw2->GetBranch("const_pt") || !tw2->GetBranch("const_eta") || !tw2->GetBranch("const_phi")) {
-        std::cout << "warn: missing const_* branches in tweights for weighted theta compare" << std::endl;
+      const bool have_src = tsrc && tsrc->GetBranch("g_basis");
+      const bool have_tar = ttar && ttar->GetBranch("g_basis");
+      if (!have_src || !have_tar) {
+        std::cout << "warn: basis-vector plot skipped -- fit output is missing "
+                  << (!have_src ? "tweights.g_basis" : "tbasis_target.g_basis")
+                  << ".  Re-run unbias_weights.cc (it now stores per-jet basis values)."
+                  << std::endl;
       } else {
-        float wpt = 0.0f;
-        double ww_base = 1.0;
-        double ww_total = 1.0;
-        std::vector<double> *wconst_pt = nullptr;
-        std::vector<double> *wconst_eta = nullptr;
-        std::vector<double> *wconst_phi = nullptr;
-        tw2->SetBranchAddress("pt", &wpt);
-        tw2->SetBranchAddress("w_base", &ww_base);
-        tw2->SetBranchAddress("w_total", &ww_total);
-        tw2->SetBranchAddress("const_pt", &wconst_pt);
-        tw2->SetBranchAddress("const_eta", &wconst_eta);
-        tw2->SetBranchAddress("const_phi", &wconst_phi);
-        const Long64_t wn = tw2->GetEntries();
-        for (Long64_t i = 0; i < wn; ++i) {
-          tw2->GetEntry(i);
-          if (wpt < pt_min || wpt > pt_max) continue;
-          if (!wconst_pt || !wconst_eta || !wconst_phi) continue;
-          if (wconst_pt->size() != wconst_eta->size() || wconst_pt->size() != wconst_phi->size()) continue;
-          // (basis, x, tcp->at(j), tce->at(j), tcf->at(j), dR_min);
-          auto g = evaluate_basis(basis, wpt, *wconst_pt, *wconst_eta, *wconst_phi, kSubjetR);
-          for (int k = 0; k < nphys; ++k) {
-            const double gv = std::abs(g[k]);
-            hgw_base[k]->Fill(gv, ww_base);
-            hgw_total[k]->Fill(gv, ww_total);
-            if (gv > 0.0) {
-              gmin_base[k] = std::min(gmin_base[k], gv);
-              gmax_base[k] = std::max(gmax_base[k], gv);
-              gmin_total[k] = std::min(gmin_total[k], gv);
-              gmax_total[k] = std::max(gmax_total[k], gv);
-            }
-          }
+        // per-function titles (optional)
+        std::vector<std::string> *labels = nullptr;
+        if (tmet && tmet->GetBranch("basis_labels")) {
+          tmet->SetBranchAddress("basis_labels", &labels);
+          tmet->GetEntry(0);
         }
-      }
-      in2.Close();
 
-      // Fill target distributions (use a fresh file/tree to avoid branch conflicts)
-      TFile tfin2(target_input.c_str(), "READ");
-      TTree *tt2 = tfin2.IsZombie() ? nullptr : dynamic_cast<TTree*>(tfin2.Get(target_tree.c_str()));
-      if (!tt2 || !tt2->GetBranch("const_pt") || !tt2->GetBranch("const_eta") || !tt2->GetBranch("const_phi")) {
-        std::cout << "warn: missing const_* branches in target for weighted theta compare" << std::endl;
-      } else {
-        float tpt2 = 0.0f;
-        float tw2 = 1.0f;
-        std::vector<double> *tconst_pt2 = nullptr;
-        std::vector<double> *tconst_eta2 = nullptr;
-        std::vector<double> *tconst_phi2 = nullptr;
-        tt2->SetBranchAddress("pt", &tpt2);
-        tt2->SetBranchAddress("weight", &tw2);
-        tt2->SetBranchAddress("const_pt", &tconst_pt2);
-        tt2->SetBranchAddress("const_eta", &tconst_eta2);
-        tt2->SetBranchAddress("const_phi", &tconst_phi2);
-        const Long64_t tn2 = tt2->GetEntries();
-        for (Long64_t i = 0; i < tn2; ++i) {
-          tt2->GetEntry(i);
-          if (tpt2 < pt_min || tpt2 > pt_max) continue;
-          if (!tconst_pt2 || !tconst_eta2 || !tconst_phi2) continue;
-          if (tconst_pt2->size() != tconst_eta2->size() || tconst_pt2->size() != tconst_phi2->size()) continue;
-          //const std::vector<double> g = compute_theta_basis(tpt2, *tconst_pt2, *tconst_eta2, *tconst_phi2);
-          auto g = evaluate_basis(basis, tpt2, *tconst_pt2, *tconst_eta2, *tconst_phi2, kSubjetR);
+        // source (tweights) branches
+        std::vector<double> *sg = nullptr;
+        float  spt = 0.0f; double sw_base = 1.0, sw_total = 1.0;
+        tsrc->SetBranchAddress("g_basis", &sg);
+        tsrc->SetBranchAddress("pt", &spt);
+        tsrc->SetBranchAddress("w_base", &sw_base);
+        tsrc->SetBranchAddress("w_total", &sw_total);
 
-          for (int k = 0; k < nphys; ++k) {
-            if(i == 0 ){
-              std::cout << "g[" << k << "]: " << g[k] << " weight: " << tw2 <<  std::endl;
-            }
-            const double gv = std::abs(g[k]);
-            hgw_target[k]->Fill(gv, tw2);
-            if (gv > 0.0) {
-              gmin_target[k] = std::min(gmin_target[k], gv);
-              gmax_target[k] = std::max(gmax_target[k], gv);
-            }
-          }
-        }
-      }
-      tfin2.Close();
-      
-      // for(int j = 0; j < 5 ; j++){
-        
-      // int size = hgw_base[j]->GetNbinsX(); 
-      //   // 4. Fill the new histogram with old data
-      //   for (int i = 1; i <=  size; i++) {
-      //       hgw_base_rebin[j]->Fill(hgw_base[j]->GetBinCenter(i), hgw_base[j]->GetBinContent(i));
-      //       hgw_total_rebin[j]->Fill(hgw_total[j]->GetBinCenter(i), hgw_total[j]->GetBinContent(i));
-      //       hgw_target_rebin[j]->Fill(hgw_target[j]->GetBinCenter(i), hgw_target[j]->GetBinContent(i));
-      //   }
-    
-      // }
-      // Overlay plots with ratio panel
-      TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 6500, 5000);
-      ctw->Divide(4, 2);
-      TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
-      legw->AddEntry(hgw_target[0], Form("unbiased target %s", target_tree.c_str()), "l");
-      legw->AddEntry(hgw_base[0], "biased sample (base weight)", "l");
-      legw->AddEntry(hgw_total[0], "weighted sample (base x unbias)", "l");
-      legw->SetBorderSize(0);
-      legw->SetFillStyle(0);
-      for (int k = 0; k < nphys; ++k) {
-        ctw->cd(k + 1);
-        TPad *p_top = new TPad(Form("p_theta_top_%d", k), "", 0.0, 0.30, 1.0, 1.0);
-        TPad *p_bot = new TPad(Form("p_theta_bot_%d", k), "", 0.0, 0.0, 1.0, 0.30);
-        p_top->SetBottomMargin(0.0);
-        p_top->SetLeftMargin(0.14);
-        p_top->SetRightMargin(0.04);
-        p_bot->SetTopMargin(0.0);
-        p_bot->SetBottomMargin(0.30);
-        p_bot->SetLeftMargin(0.14);
-        p_bot->SetRightMargin(0.04);
-        p_top->Draw();
-        p_bot->Draw();
+        // target (tbasis_target) branches
+        std::vector<double> *tg = nullptr;
+        double tgw = 1.0;
+        ttar->SetBranchAddress("g_basis", &tg);
+        ttar->SetBranchAddress("weight", &tgw);
 
-        p_top->cd();
-        gPad->SetLogy();
-        gPad->SetLogx();
-        gPad->SetTicks(1,1);
-        std::cout << "On canvas k=" << k << " then drawing hist with integral " << hgw_target[k]->Integral() << std::endl;
-        // Use per-basis min/max from the actual g values to set display range.
-        double xmin = std::min({gmin_base[k], gmin_total[k], gmin_target[k]});
-        double xmax = std::max({gmax_base[k], gmax_total[k], gmax_target[k]});
-        if (std::isfinite(xmin) && xmax > xmin) {
-          const double logmin = std::log10(xmin);
-          const double logmax = std::log10(xmax);
-          const double span = std::max(1e-6, logmax - logmin);
-          const double newmin = std::pow(10.0, logmin - 0.05 * span);
-          const double newmax = std::pow(10.0, logmax + 0.05 * span);
-          hgw_target[k]->GetXaxis()->SetRangeUser(newmin, newmax);
-          hgw_base[k]->GetXaxis()->SetRangeUser(newmin, newmax);
-          hgw_total[k]->GetXaxis()->SetRangeUser(newmin, newmax);
+        // number of basis functions from the first source entry
+        int nphys = 0;
+        if (tsrc->GetEntries() > 0) { tsrc->GetEntry(0); nphys = sg ? (int)sg->size() : 0; }
+
+        if (nphys == 0) {
+          std::cout << "warn: basis-vector plot skipped -- g_basis is empty." << std::endl;
         } else {
-          set_logx_range_from_content(hgw_target[k], hgw_base[k], hgw_total[k]);
-        }
-        hgw_target[k]->Draw("E1");
-        hgw_base[k]->Draw("E1 same");
-        hgw_total[k]->Draw("E1 same");
-        if (k == 0) legw->Draw();
+          auto label_of = [&](int k) -> std::string {
+            if (labels && k < (int)labels->size() && !(*labels)[k].empty()) return (*labels)[k];
+            return std::string(Form("g_%d", k));
+          };
 
-        // Ratio to target (preserve binning)
-        p_bot->cd();
-        gPad->SetLogx();
-        gPad->SetTicks(1,1); 
-        TH1D *h_ratio_base = (TH1D*)hgw_base[k]->Clone(Form("hThetaW_ratio_base_%d", k));
-        TH1D *h_ratio_total = (TH1D*)hgw_total[k]->Clone(Form("hThetaW_ratio_total_%d", k));
-        h_ratio_base->Divide(hgw_target[k]);
-        h_ratio_total->Divide(hgw_target[k]);
-        h_ratio_total->SetTitle("; g_{k}; ratio to target");
-        h_ratio_total->SetLineColor(kRed + 1);
-        h_ratio_base->SetLineColor(kBlue + 1);
-        h_ratio_total->SetLineWidth(1);
-        h_ratio_base->SetLineWidth(1);
-        h_ratio_total->SetMarkerStyle(21);
-        h_ratio_base->SetMarkerStyle(20);
-        h_ratio_total->SetMarkerSize(0.5);
-        h_ratio_base->SetMarkerSize(0.5);
-        h_ratio_total->SetMinimum(0.5);
-        h_ratio_total->SetMaximum(1.5);
-        h_ratio_total->GetYaxis()->SetNdivisions(505);
-        h_ratio_total->GetYaxis()->SetTitleSize(0.10);
-        h_ratio_total->GetYaxis()->SetTitleOffset(0.5);
-        h_ratio_total->GetYaxis()->SetLabelSize(0.08);
-        h_ratio_total->GetXaxis()->SetTitleSize(0.10);
-        h_ratio_total->GetXaxis()->SetLabelSize(0.08);
-        h_ratio_total->Draw("E1");
-        h_ratio_base->Draw("E1 same");
-        TLine *lr = new TLine(h_ratio_total->GetXaxis()->GetXmin(), 1.0,
-                              h_ratio_total->GetXaxis()->GetXmax(), 1.0);
-        lr->SetLineStyle(2);
-        lr->SetLineColor(kGray + 2);
-        lr->Draw("same");
+          const Long64_t ns = tsrc->GetEntries();
+          const Long64_t nt = ttar->GetEntries();
+
+          // pass 1: per-function positive min/max (source total + target) for log ranges
+          std::vector<double> gmin(nphys, std::numeric_limits<double>::infinity());
+          std::vector<double> gmax(nphys, 0.0);
+          auto scan = [&](std::vector<double> *g) {
+            if (!g) return;
+            for (int k = 0; k < nphys && k < (int)g->size(); ++k) {
+              const double v = std::abs((*g)[k]);
+              if (v > 0.0) { gmin[k] = std::min(gmin[k], v); gmax[k] = std::max(gmax[k], v); }
+            }
+          };
+          for (Long64_t i = 0; i < ns; ++i) { tsrc->GetEntry(i); if (spt < pt_min || spt > pt_max) continue; scan(sg); }
+          for (Long64_t i = 0; i < nt; ++i) { ttar->GetEntry(i); scan(tg); }
+
+          // build histograms with data-driven log binning (handles tiny EEC and huge pT^n alike)
+          const int nbins = 20;
+          std::vector<TH1D*> hbase(nphys), htot(nphys), htar(nphys);
+          for (int k = 0; k < nphys; ++k) {
+            double lo = std::isfinite(gmin[k]) ? gmin[k] : 1e-3;
+            double hi = (gmax[k] > lo) ? gmax[k] : lo * 10.0;
+            double logmin = std::log10(lo) - 0.10;
+            double logmax = std::log10(hi) + 0.10;
+            if (!(logmax > logmin)) { logmin = -3.0; logmax = 3.0; }
+            std::vector<double> edges(nbins + 1);
+            for (int i = 0; i <= nbins; ++i)
+              edges[i] = std::pow(10.0, logmin + (logmax - logmin) * i / nbins);
+            const std::string ttl = label_of(k) + Form("; g_{%d}; entries", k);
+            hbase[k] = new TH1D(Form("hg_base_%d",   k), ttl.c_str(), nbins, edges.data());
+            htot[k]  = new TH1D(Form("hg_total_%d",  k), ttl.c_str(), nbins, edges.data());
+            htar[k]  = new TH1D(Form("hg_target_%d", k), ttl.c_str(), nbins, edges.data());
+            for (TH1D *h : { hbase[k], htot[k], htar[k] }) { h->Sumw2(); h->SetLineWidth(1); h->SetMarkerSize(0.5); }
+            hbase[k]->SetLineColor(kBlue + 1);  hbase[k]->SetMarkerColor(kBlue + 1);  hbase[k]->SetMarkerStyle(20);
+            htot[k] ->SetLineColor(kRed + 1);   htot[k] ->SetMarkerColor(kRed + 1);   htot[k] ->SetMarkerStyle(21);
+            htar[k] ->SetLineColor(kGreen + 2); htar[k] ->SetMarkerColor(kGreen + 2); htar[k] ->SetMarkerStyle(22);
+          }
+
+          // pass 2: fill
+          for (Long64_t i = 0; i < ns; ++i) {
+            tsrc->GetEntry(i);
+            if (spt < pt_min || spt > pt_max) continue;
+            if (!sg) continue;
+            for (int k = 0; k < nphys && k < (int)sg->size(); ++k) {
+              const double v = std::abs((*sg)[k]);
+              hbase[k]->Fill(v, sw_base);
+              htot[k] ->Fill(v, sw_total);
+            }
+          }
+          for (Long64_t i = 0; i < nt; ++i) {
+            ttar->GetEntry(i);
+            if (!tg) continue;
+            for (int k = 0; k < nphys && k < (int)tg->size(); ++k)
+              htar[k]->Fill(std::abs((*tg)[k]), tgw);
+          }
+
+          // canvas grid adapts to the number of basis functions
+          const int ncol = std::max(1, (int)std::ceil(std::sqrt((double)nphys)));
+          const int nrow = (nphys + ncol - 1) / ncol;
+          TCanvas *ctw = new TCanvas("c_basis_weighted", "basis vectors (weighted)", 480 * ncol, 430 * nrow);
+          ctw->Divide(ncol, nrow);
+          TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
+          legw->AddEntry(htar[0],  Form("unbiased target %s", target_tree.c_str()), "lp");
+          legw->AddEntry(hbase[0], "biased sample (base weight)", "lp");
+          legw->AddEntry(htot[0],  "weighted sample (base x unbias)", "lp");
+          legw->SetBorderSize(0); legw->SetFillStyle(0);
+
+          for (int k = 0; k < nphys; ++k) {
+            ctw->cd(k + 1);
+            TPad *p_top = new TPad(Form("p_bt_%d", k), "", 0.0, 0.30, 1.0, 1.0);
+            TPad *p_bot = new TPad(Form("p_bb_%d", k), "", 0.0, 0.0, 1.0, 0.30);
+            p_top->SetBottomMargin(0.0); p_top->SetLeftMargin(0.14); p_top->SetRightMargin(0.04);
+            p_bot->SetTopMargin(0.0); p_bot->SetBottomMargin(0.30); p_bot->SetLeftMargin(0.14); p_bot->SetRightMargin(0.04);
+            p_top->Draw(); p_bot->Draw();
+
+            p_top->cd(); gPad->SetLogy(); gPad->SetLogx(); gPad->SetTicks(1, 1);
+            htar[k]->Draw("E1"); hbase[k]->Draw("E1 same"); htot[k]->Draw("E1 same");
+            if (k == 0) legw->Draw();
+
+            p_bot->cd(); gPad->SetLogx(); gPad->SetTicks(1, 1);
+            TH1D *rb = (TH1D*)hbase[k]->Clone(Form("hg_ratio_base_%d",  k));
+            TH1D *rt = (TH1D*)htot[k] ->Clone(Form("hg_ratio_total_%d", k));
+            rb->Divide(htar[k]); rt->Divide(htar[k]);
+            rt->SetTitle("; g_{k}; ratio to target");
+            rt->SetLineColor(kRed + 1); rb->SetLineColor(kBlue + 1);
+            rt->SetMinimum(0.5); rt->SetMaximum(1.5);
+            rt->GetYaxis()->SetNdivisions(505);
+            rt->GetYaxis()->SetTitleSize(0.10); rt->GetYaxis()->SetTitleOffset(0.5); rt->GetYaxis()->SetLabelSize(0.08);
+            rt->GetXaxis()->SetTitleSize(0.10); rt->GetXaxis()->SetLabelSize(0.08);
+            rt->Draw("E1"); rb->Draw("E1 same");
+            TLine *lr = new TLine(rt->GetXaxis()->GetXmin(), 1.0, rt->GetXaxis()->GetXmax(), 1.0);
+            lr->SetLineStyle(2); lr->SetLineColor(kGray + 2); lr->Draw("same");
+          }
+          ctw->SaveAs("plot_theta_basis_weighted_compare.pdf");
+        }
       }
-      ctw->SaveAs("plot_theta_basis_weighted_compare.pdf");
+      inb.Close();
     }
   }
 

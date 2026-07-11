@@ -105,6 +105,14 @@ static std::string get_arg(int argc, char *argv[],
     return def;
 }
 
+// True if `flag` appears anywhere on the command line.  Used to decide whether
+// the user is overriding the header BasisConfig for the subjet-moment family.
+static bool has_arg(int argc, char *argv[], const std::string &flag) {
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == flag) return true;
+    return false;
+}
+
 // Parse a comma-separated list of numbers, e.g. "3,4,5" or "0.1, 0.05".
 static std::vector<double> parse_doubles(const std::string &s) {
     std::vector<double> out;
@@ -493,7 +501,13 @@ int main(int argc, char *argv[]) {
     cfg.eec_dR_min = dR_min;
 
     // >>> CLI override of the subjet-moment family (radii × powers) <<<
-    {
+    // Only rebuild the subjet-moment list from the command line when the user
+    // actually passes one of the subjet flags.  If none are given, the header
+    // BasisConfig above is authoritative — so editing its `subjet_moments`
+    // (e.g. adding a second radius) takes effect exactly as written.
+    if (has_arg(argc, argv, "--subjet-radii") ||
+        has_arg(argc, argv, "--subjet-powers") ||
+        has_arg(argc, argv, "--subjet-R")) {
         std::vector<double> radii = subjet_radii_s.empty()
             ? std::vector<double>{ subjet_R }
             : parse_doubles(subjet_radii_s);
@@ -532,6 +546,10 @@ int main(int argc, char *argv[]) {
     std::vector<double> c(nphys, 0.0);
     double tgt_sumW = 0.0;
     size_t tgt_njets = 0;
+    // Per-jet target basis values (physical), buffered so the output can carry
+    // them for the plotting macro (basis-vector closure plots).
+    std::vector<std::vector<double>> tgt_g;
+    std::vector<double> tgt_w, tgt_pt;
     {
         TFile tf(target_input.c_str(), "READ");
         if (tf.IsZombie()) die("failed to open target file: " + target_input);
@@ -541,10 +559,11 @@ int main(int argc, char *argv[]) {
         const RadiusPlan tplan = plan_tree_inputs(tt, req, subjet_source, "target");
         read_tree_jets(tt, n_branch, pt_branch, wt_branch, pt_min, pt_max,
                        req, tplan, dR_min,
-                       [&](const JetData &jd, double /*x*/, double w, int /*src*/) {
+                       [&](const JetData &jd, double x, double w, int /*src*/) {
                            const std::vector<double> gv = evaluate_basis(basis, jd);
                            tgt_sumW += w; ++tgt_njets;
                            for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
+                           tgt_g.push_back(gv); tgt_w.push_back(w); tgt_pt.push_back(x);
                        });
         tf.Close();
     }
@@ -842,7 +861,7 @@ int main(int argc, char *argv[]) {
     TFile of(out_name.c_str(), "RECREATE");
     TTree tw("tweights", "per-jet unbiasing weights");
     float  op=0; double wu=1,wb=1,wt2=1,wa=1; int os=-1;
-    std::vector<double> xcp,xce,xcf,xsj;
+    std::vector<double> xcp,xce,xcf,xsj,xg;
     bool sco = (ocp.size()==N);
     bool ssj = (osj.size()==N);
     tw.Branch("pt",&op,"pt/F");
@@ -850,6 +869,9 @@ int main(int argc, char *argv[]) {
     tw.Branch("w_base",&wb,"w_base/D");
     tw.Branch("w_total",&wt2,"w_total/D");
     tw.Branch("source",&os,"source/I");
+    // Per-jet basis values (physical), so the plotter can draw the basis-vector
+    // distributions without re-deriving the basis.
+    tw.Branch("g_basis",&xg);
     if (has_an) tw.Branch("w_analytic",&wa,"w_analytic/D");
     if (sco) { tw.Branch("const_pt",&xcp); tw.Branch("const_eta",&xce); tw.Branch("const_phi",&xcf); }
     if (ssj) tw.Branch("subjet_pt",&xsj);
@@ -864,6 +886,7 @@ int main(int argc, char *argv[]) {
         if (has_an) wa = (os==0) ? wX_an : wYp_an;
         if (sco) { xcp=ocp[i]; xce=oce[i]; xcf=ocf[i]; }
         if (ssj) xsj=osj[i];
+        xg = gvals[i];   // physical basis values for this source jet
         tw.Fill();
     }
 
@@ -871,8 +894,12 @@ int main(int argc, char *argv[]) {
     auto la = lam; la.push_back(lam_norm);
     std::string bl = basis_signature(cfg) + "+norm_analytic";
     std::string subjet_src_label = subjet_source;
+    // Per-function labels, so the plotter can title the basis-vector plots.
+    std::vector<std::string> basis_labels;
+    for (int j = 0; j < nphys; ++j) basis_labels.push_back(basis[j]->label());
     tm.Branch("lambda",&la); tm.Branch("lambda_norm",&lam_norm,"lambda_norm/D");
     tm.Branch("basis",&bl);
+    tm.Branch("basis_labels",&basis_labels);
     tm.Branch("subjet_source",&subjet_src_label);
     tm.Branch("pt_min",const_cast<double*>(&pt_min),"pt_min/D");
     tm.Branch("pt_max",const_cast<double*>(&pt_max),"pt_max/D");
@@ -880,7 +907,20 @@ int main(int argc, char *argv[]) {
     double sr_out = primary_R;
     tm.Branch("subjet_R",&sr_out,"subjet_R/D");
     tm.Fill();
-    tw.Write(); tm.Write(); of.Close(); in_file.Close();
+
+    // Companion tree: per-jet TARGET basis values + weight, so the plotter can
+    // overlay the target basis-vector distributions (no basis recomputation).
+    TTree tbt("tbasis_target","per-jet target basis values (physical)");
+    float  bt_pt = 0.0f; double bt_w = 1.0; std::vector<double> bt_g;
+    tbt.Branch("pt", &bt_pt, "pt/F");
+    tbt.Branch("weight", &bt_w, "weight/D");
+    tbt.Branch("g_basis", &bt_g);
+    for (size_t i = 0; i < tgt_g.size(); ++i) {
+        bt_pt = (float)tgt_pt[i]; bt_w = tgt_w[i]; bt_g = tgt_g[i];
+        tbt.Fill();
+    }
+
+    tw.Write(); tm.Write(); tbt.Write(); of.Close(); in_file.Close();
 
     // ---- Verification ----
     std::cout << "\nFinal lambdas:" << std::endl;
