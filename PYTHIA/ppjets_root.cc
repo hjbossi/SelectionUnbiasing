@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
   // Create Pythia instance and set it up to generate hard QCD processes
   // above pTHat = 20 GeV for pp collisions at 14 TeV.
   Pythia pythia;
-  int nEvent = 10;//1e5;
+  int nEvent = 5e6;
 
   // pp beams
   pythia.readString("Beams:idA = 2212");
@@ -189,7 +189,7 @@ int main(int argc, char* argv[]) {
 
     if (!pythia.next()) continue;
 
-    if (iEvent % 100000 == 0) std::cout << "On event " << iEvent << std::endl;
+    if (iEvent % 5000 == 0) std::cout << "On event " << iEvent << std::endl;
 
     // Find number of all final charged particles.
     weight = pythia.info.weight();
@@ -239,7 +239,6 @@ int main(int argc, char* argv[]) {
           eta[index]  = jet.eta();
           phi[index]  = jet.phi();
           mass[index] = jet.m();
-          std::cout << "pt jet: " << jet.pt() << std::endl;
 
           // for each jet loop through the constituents
           std::vector<fastjet::PseudoJet> constituents = jet.constituents();
