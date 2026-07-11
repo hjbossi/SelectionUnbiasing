@@ -24,8 +24,13 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "subjet_basis.h"     // get_default_basis(), kSubjetR, recluster_ca_subjet_pts()
+#include "basis_functions.h"  // generic configurable Basis framework (JetData, evaluate_basis, ...)
 
 static void die(const std::string &msg) {
   std::cerr << "error: " << msg << std::endl;
@@ -42,12 +47,13 @@ static std::string get_arg(int argc, char* argv[], const std::string &flag, cons
 // =====================================================================
 // BASIS VECTORS
 // =====================================================================
-// This macro no longer re-derives the basis.  unbias_weights.cc writes the
-// per-jet basis values g_k directly into its output — source jets in
-// tweights.g_basis, target jets in the tbasis_target tree, with per-function
-// titles in meta.basis_labels — so the basis-vector plots below always match
-// exactly the basis that was fit (EEC terms, several subjet radii, custom
-// powers, ...), with no reclustering and no dependence on the old fixed basis.
+// The basis-vector plots below use exactly the basis that was fit.  This macro
+// reconstructs the runtime basis from the fit metadata (meta.basis_labels +
+// meta.basis) via rebuild_basis_from_meta(), then re-evaluates it from each
+// jet's constituents (reclustering the stored subjet radii on the fly), and
+// titles each panel with the corresponding meta.basis_labels entry.  The plots
+// therefore follow the fitted basis (EEC terms, several subjet radii, custom
+// powers, ...) rather than any fixed default basis.
 
 static void set_logx_range_from_content(TH1D *h1, TH1D *h2, TH1D *h3) {
   double xmin = std::numeric_limits<double>::infinity();
@@ -101,6 +107,95 @@ static void fill_eec(TH1D *h, const std::vector<double> &cpt,
       h->Fill(theta, wjet * w);
     }
   }
+}
+
+// =====================================================================
+// Basis reconstruction from fit metadata
+// =====================================================================
+// Defensive placeholder used when a basis_labels entry cannot be parsed, so
+// the reconstructed basis stays index-aligned with lambda / basis_labels.
+class ZeroBasisFunction : public BasisFunction {
+public:
+  explicit ZeroBasisFunction(std::string label) : label_(std::move(label)) {}
+  double evaluate(const JetData &) const override { return 0.0; }
+  std::string label() const override { return label_; }
+private:
+  std::string label_;
+};
+
+// Reconstruct the runtime basis that was actually fit, straight from the ROOT
+// metadata written by unbias_weights.cc:
+//   * meta.basis_labels (vector<string>) -- authoritative order + panel titles
+//   * meta.basis        (string)         -- machine-readable signature (norm=..)
+// Each label is parsed back into the matching BasisFunction, in order.  On an
+// older file without a meta / basis_labels branch we warn and fall back to the
+// fixed default basis (get_default_basis()).  labels_out receives the labels
+// used (either the metadata labels or the default-basis labels).
+static Basis rebuild_basis_from_meta(const std::string &input,
+                                     std::vector<std::string> &labels_out) {
+  Basis basis;
+  labels_out.clear();
+
+  auto fallback = [&]() {
+    std::cout << "warn: meta / basis_labels not found in " << input
+              << " -- falling back to get_default_basis()." << std::endl;
+    basis.clear();
+    labels_out.clear();
+    for (const BasisFuncDef &d : get_default_basis()) {
+      labels_out.push_back(d.label);
+      basis.push_back(std::make_unique<SubjetMomentBasisFunction>(
+          kSubjetR, static_cast<double>(d.n), d.label));
+    }
+  };
+
+  TFile f(input.c_str(), "READ");
+  TTree *meta = f.IsZombie() ? nullptr : dynamic_cast<TTree *>(f.Get("meta"));
+  if (!meta || !meta->GetBranch("basis_labels")) {
+    fallback();
+    return basis;
+  }
+
+  std::vector<std::string> *labels = nullptr;
+  std::string *sig = nullptr;
+  meta->SetBranchAddress("basis_labels", &labels);
+  if (meta->GetBranch("basis")) meta->SetBranchAddress("basis", &sig);
+  meta->GetEntry(0);
+
+  if (!labels) {  // branch present but could not be read back
+    fallback();
+    return basis;
+  }
+
+  // EEC normalisation from the machine-readable signature (norm=%lf); the
+  // historical default is 120 when the signature carries no norm.
+  double eec_norm = 120.0;
+  if (sig) {
+    const auto pos = sig->find("norm=");
+    if (pos != std::string::npos) {
+      double v = 0.0;
+      if (std::sscanf(sig->c_str() + pos, "norm=%lf", &v) == 1) eec_norm = v;
+    }
+  }
+
+  for (const std::string &lab : *labels) {
+    labels_out.push_back(lab);
+    double R = 0.0, n = 0.0, A = 0.0, B = 0.0, E = 0.0;
+    int    m = 0;
+    if (std::sscanf(lab.c_str(),
+                    "sjmom: sum pT^{%lf} (stored subjets R=%lf)", &n, &R) == 2) {
+      basis.push_back(std::make_unique<SubjetMomentBasisFunction>(R, n, lab));
+    } else if (std::sscanf(lab.c_str(),
+                           "eec: dR^{-%lf} ln^{%lf} z^{%d} [dR<%lf]",
+                           &A, &B, &m, &E) == 4) {
+      basis.push_back(std::make_unique<EECBasisFunction>(A, B, m, E, eec_norm, lab));
+    } else {
+      std::cout << "warn: unrecognised basis label \"" << lab
+                << "\" -- inserting a zero-valued placeholder to keep index"
+                   " alignment with lambda / basis_labels." << std::endl;
+      basis.push_back(std::make_unique<ZeroBasisFunction>(lab));
+    }
+  }
+  return basis;
 }
 
 int main(int argc, char* argv[]) {
@@ -392,161 +487,203 @@ int main(int argc, char* argv[]) {
   in.Close();
   tfin.Close();
   {
-    // Basis-vector closure plots (read straight from the fit output)
-    {
-      
-      // ---------------------------------------------------------------
-      // Basis-vector closure plots, read STRAIGHT from the fit output:
-      //   source jets : tweights.g_basis        (weighted by w_base, w_total)
-      //   target jets : tbasis_target.g_basis    (weighted by weight)
-      //   titles      : meta.basis_labels
-      // No basis is re-derived here, so these plots always match the fit
-      // exactly (EEC terms, multiple subjet radii, custom powers, ...).
-      // ---------------------------------------------------------------
-      TH1::AddDirectory(kFALSE);   // histos below are transient, not file-owned
-      TFile inb(input.c_str(), "READ");
-      TTree *tsrc = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("tweights"));
-      TTree *ttar = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("tbasis_target"));
-      TTree *tmet = inb.IsZombie() ? nullptr : dynamic_cast<TTree*>(inb.Get("meta"));
+    // ---------------------------------------------------------------
+    // Weighted theta-basis distributions.
+    //
+    // The basis is reconstructed from the fit metadata (meta.basis /
+    // meta.basis_labels) and RE-EVALUATED from each jet's constituents, so
+    // the panels follow exactly the basis that was fit and are titled by the
+    // matching meta.basis_labels entry.  Source jets come from tweights
+    // (weighted by w_base, w_total); target jets from the unbiased target
+    // tree (weighted by weight).  We do not depend on any stored g_basis /
+    // subjet branches.
+    // ---------------------------------------------------------------
+    TH1::AddDirectory(kFALSE);   // histos below are transient, not file-owned
 
-      const bool have_src = tsrc && tsrc->GetBranch("g_basis");
-      const bool have_tar = ttar && ttar->GetBranch("g_basis");
-      if (!have_src || !have_tar) {
-        std::cout << "warn: basis-vector plot skipped -- fit output is missing "
-                  << (!have_src ? "tweights.g_basis" : "tbasis_target.g_basis")
-                  << ".  Re-run unbias_weights.cc (it now stores per-jet basis values)."
-                  << std::endl;
-      } else {
-        // per-function titles (optional)
-        std::vector<std::string> *labels = nullptr;
-        if (tmet && tmet->GetBranch("basis_labels")) {
-          tmet->SetBranchAddress("basis_labels", &labels);
-          tmet->GetEntry(0);
+    // Reconstruct the fitted basis + its per-function labels from metadata.
+    std::vector<std::string> basis_labels;
+    Basis basis = rebuild_basis_from_meta(input, basis_labels);
+    const int nphys = (int)basis.size();
+
+    std::cout << "theta-basis: reconstructed " << nphys
+              << " basis function(s) from metadata:" << std::endl;
+    for (int k = 0; k < nphys; ++k)
+      std::cout << "  [" << k << "] " << basis_labels[k] << std::endl;
+
+    if (nphys == 0) {
+      std::cout << "warn: basis-vector plot skipped -- reconstructed basis is empty." << std::endl;
+    } else {
+      const BasisInputs req = basis_inputs(basis);
+
+      // Evaluate the generic basis for one jet from its constituents: recluster
+      // the stored subjet radii on the fly, build the shared EEC pair table if
+      // any EEC term is present, then evaluate every basis function.
+      auto eval_jet = [&](double jpt,
+                          const std::vector<double> &cpt,
+                          const std::vector<double> &ceta,
+                          const std::vector<double> &cphi) -> std::vector<double> {
+        JetData jd;
+        jd.pt = jpt;
+        jd.const_pt = &cpt; jd.const_eta = &ceta; jd.const_phi = &cphi;
+        std::map<int, std::vector<double>> subj;   // stable storage for the pointers below
+        for (int rtag : req.subjet_rtags) {
+          subj[rtag] = recluster_ca_subjet_pts(cpt, ceta, cphi, radius_from_tag(rtag));
+          jd.subjet_pt[rtag] = &subj[rtag];
         }
+        if (req.constituents) build_constituent_pairs(jd, 0.001);
+        return evaluate_basis(basis, jd);
+      };
 
-        // source (tweights) branches
-        std::vector<double> *sg = nullptr;
+      // pass 1 (single evaluation): store per-jet g vectors + weights and
+      // accumulate per-function positive min/max of |g| for the log binning.
+      std::vector<double> gmin(nphys, std::numeric_limits<double>::infinity());
+      std::vector<double> gmax(nphys, 0.0);
+      auto accumulate = [&](const std::vector<double> &g) {
+        for (int k = 0; k < nphys && k < (int)g.size(); ++k) {
+          const double v = std::abs(g[k]);
+          if (v > 0.0) { gmin[k] = std::min(gmin[k], v); gmax[k] = std::max(gmax[k], v); }
+        }
+      };
+
+      std::vector<std::vector<double>> src_g;      // per source jet g vector
+      std::vector<double> src_wbase, src_wtotal;
+      std::vector<std::vector<double>> tar_g;      // per target jet g vector
+      std::vector<double> tar_w;
+
+      // source jets: tweights (weighted by w_base, w_total)
+      TFile insrc(input.c_str(), "READ");
+      TTree *tsrc = insrc.IsZombie() ? nullptr : dynamic_cast<TTree*>(insrc.Get("tweights"));
+      if (!tsrc || !tsrc->GetBranch("const_pt") || !tsrc->GetBranch("const_eta") ||
+          !tsrc->GetBranch("const_phi")) {
+        std::cout << "warn: missing const_* branches in tweights for weighted theta compare" << std::endl;
+      } else {
         float  spt = 0.0f; double sw_base = 1.0, sw_total = 1.0;
-        tsrc->SetBranchAddress("g_basis", &sg);
+        std::vector<double> *scp = nullptr, *sce = nullptr, *scf = nullptr;
         tsrc->SetBranchAddress("pt", &spt);
         tsrc->SetBranchAddress("w_base", &sw_base);
         tsrc->SetBranchAddress("w_total", &sw_total);
-
-        // target (tbasis_target) branches
-        std::vector<double> *tg = nullptr;
-        double tgw = 1.0;
-        ttar->SetBranchAddress("g_basis", &tg);
-        ttar->SetBranchAddress("weight", &tgw);
-
-        // number of basis functions from the first source entry
-        int nphys = 0;
-        if (tsrc->GetEntries() > 0) { tsrc->GetEntry(0); nphys = sg ? (int)sg->size() : 0; }
-
-        if (nphys == 0) {
-          std::cout << "warn: basis-vector plot skipped -- g_basis is empty." << std::endl;
-        } else {
-          auto label_of = [&](int k) -> std::string {
-            if (labels && k < (int)labels->size() && !(*labels)[k].empty()) return (*labels)[k];
-            return std::string(Form("g_%d", k));
-          };
-
-          const Long64_t ns = tsrc->GetEntries();
-          const Long64_t nt = ttar->GetEntries();
-
-          // pass 1: per-function positive min/max (source total + target) for log ranges
-          std::vector<double> gmin(nphys, std::numeric_limits<double>::infinity());
-          std::vector<double> gmax(nphys, 0.0);
-          auto scan = [&](std::vector<double> *g) {
-            if (!g) return;
-            for (int k = 0; k < nphys && k < (int)g->size(); ++k) {
-              const double v = std::abs((*g)[k]);
-              if (v > 0.0) { gmin[k] = std::min(gmin[k], v); gmax[k] = std::max(gmax[k], v); }
-            }
-          };
-          for (Long64_t i = 0; i < ns; ++i) { tsrc->GetEntry(i); if (spt < pt_min || spt > pt_max) continue; scan(sg); }
-          for (Long64_t i = 0; i < nt; ++i) { ttar->GetEntry(i); scan(tg); }
-
-          // build histograms with data-driven log binning (handles tiny EEC and huge pT^n alike)
-          const int nbins = 20;
-          std::vector<TH1D*> hbase(nphys), htot(nphys), htar(nphys);
-          for (int k = 0; k < nphys; ++k) {
-            double lo = std::isfinite(gmin[k]) ? gmin[k] : 1e-3;
-            double hi = (gmax[k] > lo) ? gmax[k] : lo * 10.0;
-            double logmin = std::log10(lo) - 0.10;
-            double logmax = std::log10(hi) + 0.10;
-            if (!(logmax > logmin)) { logmin = -3.0; logmax = 3.0; }
-            std::vector<double> edges(nbins + 1);
-            for (int i = 0; i <= nbins; ++i)
-              edges[i] = std::pow(10.0, logmin + (logmax - logmin) * i / nbins);
-            const std::string ttl = label_of(k) + Form("; g_{%d}; entries", k);
-            hbase[k] = new TH1D(Form("hg_base_%d",   k), ttl.c_str(), nbins, edges.data());
-            htot[k]  = new TH1D(Form("hg_total_%d",  k), ttl.c_str(), nbins, edges.data());
-            htar[k]  = new TH1D(Form("hg_target_%d", k), ttl.c_str(), nbins, edges.data());
-            for (TH1D *h : { hbase[k], htot[k], htar[k] }) { h->Sumw2(); h->SetLineWidth(1); h->SetMarkerSize(0.5); }
-            hbase[k]->SetLineColor(kBlue + 1);  hbase[k]->SetMarkerColor(kBlue + 1);  hbase[k]->SetMarkerStyle(20);
-            htot[k] ->SetLineColor(kRed + 1);   htot[k] ->SetMarkerColor(kRed + 1);   htot[k] ->SetMarkerStyle(21);
-            htar[k] ->SetLineColor(kGreen + 2); htar[k] ->SetMarkerColor(kGreen + 2); htar[k] ->SetMarkerStyle(22);
-          }
-
-          // pass 2: fill
-          for (Long64_t i = 0; i < ns; ++i) {
-            tsrc->GetEntry(i);
-            if (spt < pt_min || spt > pt_max) continue;
-            if (!sg) continue;
-            for (int k = 0; k < nphys && k < (int)sg->size(); ++k) {
-              const double v = std::abs((*sg)[k]);
-              hbase[k]->Fill(v, sw_base);
-              htot[k] ->Fill(v, sw_total);
-            }
-          }
-          for (Long64_t i = 0; i < nt; ++i) {
-            ttar->GetEntry(i);
-            if (!tg) continue;
-            for (int k = 0; k < nphys && k < (int)tg->size(); ++k)
-              htar[k]->Fill(std::abs((*tg)[k]), tgw);
-          }
-
-          // canvas grid adapts to the number of basis functions
-          const int ncol = std::max(1, (int)std::ceil(std::sqrt((double)nphys)));
-          const int nrow = (nphys + ncol - 1) / ncol;
-          TCanvas *ctw = new TCanvas("c_basis_weighted", "basis vectors (weighted)", 480 * ncol, 430 * nrow);
-          ctw->Divide(ncol, nrow);
-          TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
-          legw->AddEntry(htar[0],  Form("unbiased target %s", target_tree.c_str()), "lp");
-          legw->AddEntry(hbase[0], "biased sample (base weight)", "lp");
-          legw->AddEntry(htot[0],  "weighted sample (base x unbias)", "lp");
-          legw->SetBorderSize(0); legw->SetFillStyle(0);
-
-          for (int k = 0; k < nphys; ++k) {
-            ctw->cd(k + 1);
-            TPad *p_top = new TPad(Form("p_bt_%d", k), "", 0.0, 0.30, 1.0, 1.0);
-            TPad *p_bot = new TPad(Form("p_bb_%d", k), "", 0.0, 0.0, 1.0, 0.30);
-            p_top->SetBottomMargin(0.0); p_top->SetLeftMargin(0.14); p_top->SetRightMargin(0.04);
-            p_bot->SetTopMargin(0.0); p_bot->SetBottomMargin(0.30); p_bot->SetLeftMargin(0.14); p_bot->SetRightMargin(0.04);
-            p_top->Draw(); p_bot->Draw();
-
-            p_top->cd(); gPad->SetLogy(); gPad->SetLogx(); gPad->SetTicks(1, 1);
-            htar[k]->Draw("E1"); hbase[k]->Draw("E1 same"); htot[k]->Draw("E1 same");
-            if (k == 0) legw->Draw();
-
-            p_bot->cd(); gPad->SetLogx(); gPad->SetTicks(1, 1);
-            TH1D *rb = (TH1D*)hbase[k]->Clone(Form("hg_ratio_base_%d",  k));
-            TH1D *rt = (TH1D*)htot[k] ->Clone(Form("hg_ratio_total_%d", k));
-            rb->Divide(htar[k]); rt->Divide(htar[k]);
-            rt->SetTitle("; g_{k}; ratio to target");
-            rt->SetLineColor(kRed + 1); rb->SetLineColor(kBlue + 1);
-            rt->SetMinimum(0.5); rt->SetMaximum(1.5);
-            rt->GetYaxis()->SetNdivisions(505);
-            rt->GetYaxis()->SetTitleSize(0.10); rt->GetYaxis()->SetTitleOffset(0.5); rt->GetYaxis()->SetLabelSize(0.08);
-            rt->GetXaxis()->SetTitleSize(0.10); rt->GetXaxis()->SetLabelSize(0.08);
-            rt->Draw("E1"); rb->Draw("E1 same");
-            TLine *lr = new TLine(rt->GetXaxis()->GetXmin(), 1.0, rt->GetXaxis()->GetXmax(), 1.0);
-            lr->SetLineStyle(2); lr->SetLineColor(kGray + 2); lr->Draw("same");
-          }
-          ctw->SaveAs("plot_theta_basis_weighted_compare.pdf");
+        tsrc->SetBranchAddress("const_pt", &scp);
+        tsrc->SetBranchAddress("const_eta", &sce);
+        tsrc->SetBranchAddress("const_phi", &scf);
+        const Long64_t ns = tsrc->GetEntries();
+        for (Long64_t i = 0; i < ns; ++i) {
+          tsrc->GetEntry(i);
+          if (spt < pt_min || spt > pt_max) continue;
+          if (!scp || !sce || !scf) continue;
+          if (scp->size() != sce->size() || scp->size() != scf->size()) continue;
+          std::vector<double> g = eval_jet(spt, *scp, *sce, *scf);
+          accumulate(g);
+          src_g.push_back(std::move(g));
+          src_wbase.push_back(sw_base);
+          src_wtotal.push_back(sw_total);
         }
       }
-      inb.Close();
+      insrc.Close();
+
+      // target jets: target_tree in target_input (weighted by weight)
+      TFile intar(target_input.c_str(), "READ");
+      TTree *ttar = intar.IsZombie() ? nullptr : dynamic_cast<TTree*>(intar.Get(target_tree.c_str()));
+      if (!ttar || !ttar->GetBranch("const_pt") || !ttar->GetBranch("const_eta") ||
+          !ttar->GetBranch("const_phi")) {
+        std::cout << "warn: missing const_* branches in target for weighted theta compare" << std::endl;
+      } else {
+        float tpt = 0.0f, tw = 1.0f;
+        std::vector<double> *tcp = nullptr, *tce = nullptr, *tcf = nullptr;
+        ttar->SetBranchAddress("pt", &tpt);
+        ttar->SetBranchAddress("weight", &tw);
+        ttar->SetBranchAddress("const_pt", &tcp);
+        ttar->SetBranchAddress("const_eta", &tce);
+        ttar->SetBranchAddress("const_phi", &tcf);
+        const Long64_t nt = ttar->GetEntries();
+        for (Long64_t i = 0; i < nt; ++i) {
+          ttar->GetEntry(i);
+          if (tpt < pt_min || tpt > pt_max) continue;
+          if (!tcp || !tce || !tcf) continue;
+          if (tcp->size() != tce->size() || tcp->size() != tcf->size()) continue;
+          std::vector<double> g = eval_jet(tpt, *tcp, *tce, *tcf);
+          accumulate(g);
+          tar_g.push_back(std::move(g));
+          tar_w.push_back(tw);
+        }
+      }
+      intar.Close();
+
+      // build histograms with data-driven log binning, using each function's
+      // own observed |g| range (handles tiny EEC and huge pT^n alike)
+      const int nbins = 20;
+      std::vector<TH1D*> hbase(nphys), htot(nphys), htar(nphys);
+      for (int k = 0; k < nphys; ++k) {
+        double lo = std::isfinite(gmin[k]) ? gmin[k] : 1e-3;
+        double hi = (gmax[k] > lo) ? gmax[k] : lo * 10.0;
+        double logmin = std::log10(lo) - 0.10;
+        double logmax = std::log10(hi) + 0.10;
+        if (!(logmax > logmin)) { logmin = -3.0; logmax = 3.0; }
+        std::vector<double> edges(nbins + 1);
+        for (int i = 0; i <= nbins; ++i)
+          edges[i] = std::pow(10.0, logmin + (logmax - logmin) * i / nbins);
+        const std::string lab = (k < (int)basis_labels.size())
+                                    ? basis_labels[k] : std::string(Form("g_%d", k));
+        const std::string ttl = lab + "; " + lab + "; entries";   // x-axis title = basis label
+        hbase[k] = new TH1D(Form("hg_base_%d",   k), ttl.c_str(), nbins, edges.data());
+        htot[k]  = new TH1D(Form("hg_total_%d",  k), ttl.c_str(), nbins, edges.data());
+        htar[k]  = new TH1D(Form("hg_target_%d", k), ttl.c_str(), nbins, edges.data());
+        for (TH1D *h : { hbase[k], htot[k], htar[k] }) { h->Sumw2(); h->SetLineWidth(1); h->SetMarkerSize(0.5); }
+        hbase[k]->SetLineColor(kBlue + 1);  hbase[k]->SetMarkerColor(kBlue + 1);  hbase[k]->SetMarkerStyle(20);
+        htot[k] ->SetLineColor(kRed + 1);   htot[k] ->SetMarkerColor(kRed + 1);   htot[k] ->SetMarkerStyle(21);
+        htar[k] ->SetLineColor(kGreen + 2); htar[k] ->SetMarkerColor(kGreen + 2); htar[k] ->SetMarkerStyle(22);
+      }
+
+      // pass 2: fill from the stored g vectors (basis is NOT evaluated twice)
+      for (size_t i = 0; i < src_g.size(); ++i)
+        for (int k = 0; k < nphys && k < (int)src_g[i].size(); ++k) {
+          const double v = std::abs(src_g[i][k]);
+          hbase[k]->Fill(v, src_wbase[i]);
+          htot[k] ->Fill(v, src_wtotal[i]);
+        }
+      for (size_t i = 0; i < tar_g.size(); ++i)
+        for (int k = 0; k < nphys && k < (int)tar_g[i].size(); ++k)
+          htar[k]->Fill(std::abs(tar_g[i][k]), tar_w[i]);
+
+      // canvas grid adapts to the number of basis functions
+      const int cols = std::max(1, (int)std::ceil(std::sqrt((double)nphys)));
+      const int rows = (int)std::ceil((double)nphys / cols);
+      TCanvas *ctw = new TCanvas("c_basis_weighted", "basis vectors (weighted)", 480 * cols, 430 * rows);
+      ctw->Divide(cols, rows);
+      TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
+      legw->AddEntry(htar[0],  Form("unbiased target %s", target_tree.c_str()), "lp");
+      legw->AddEntry(hbase[0], "biased sample (base weight)", "lp");
+      legw->AddEntry(htot[0],  "weighted sample (base x unbias)", "lp");
+      legw->SetBorderSize(0); legw->SetFillStyle(0);
+
+      for (int k = 0; k < nphys; ++k) {
+        ctw->cd(k + 1);
+        TPad *p_top = new TPad(Form("p_bt_%d", k), "", 0.0, 0.30, 1.0, 1.0);
+        TPad *p_bot = new TPad(Form("p_bb_%d", k), "", 0.0, 0.0, 1.0, 0.30);
+        p_top->SetBottomMargin(0.0); p_top->SetLeftMargin(0.14); p_top->SetRightMargin(0.04);
+        p_bot->SetTopMargin(0.0); p_bot->SetBottomMargin(0.30); p_bot->SetLeftMargin(0.14); p_bot->SetRightMargin(0.04);
+        p_top->Draw(); p_bot->Draw();
+
+        p_top->cd(); gPad->SetLogy(); gPad->SetLogx(); gPad->SetTicks(1, 1);
+        htar[k]->Draw("E1"); hbase[k]->Draw("E1 same"); htot[k]->Draw("E1 same");
+        if (k == 0) legw->Draw();
+
+        p_bot->cd(); gPad->SetLogx(); gPad->SetTicks(1, 1);
+        TH1D *rb = (TH1D*)hbase[k]->Clone(Form("hg_ratio_base_%d",  k));
+        TH1D *rt = (TH1D*)htot[k] ->Clone(Form("hg_ratio_total_%d", k));
+        rb->Divide(htar[k]); rt->Divide(htar[k]);
+        const std::string rlab = (k < (int)basis_labels.size())
+                                     ? basis_labels[k] : std::string(Form("g_%d", k));
+        rt->SetTitle((std::string("; ") + rlab + "; ratio to target").c_str());
+        rt->SetLineColor(kRed + 1); rb->SetLineColor(kBlue + 1);
+        rt->SetMinimum(0.5); rt->SetMaximum(1.5);
+        rt->GetYaxis()->SetNdivisions(505);
+        rt->GetYaxis()->SetTitleSize(0.10); rt->GetYaxis()->SetTitleOffset(0.5); rt->GetYaxis()->SetLabelSize(0.08);
+        rt->GetXaxis()->SetTitleSize(0.10); rt->GetXaxis()->SetLabelSize(0.08);
+        rt->Draw("E1"); rb->Draw("E1 same");
+        TLine *lr = new TLine(rt->GetXaxis()->GetXmin(), 1.0, rt->GetXaxis()->GetXmax(), 1.0);
+        lr->SetLineStyle(2); lr->SetLineColor(kGray + 2); lr->Draw("same");
+      }
+      ctw->SaveAs("plot_theta_basis_weighted_compare.pdf");
     }
   }
 
