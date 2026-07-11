@@ -37,6 +37,8 @@
 #include <TH1.h>
 #include <TVector2.h>
 
+#include "subjet_basis.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -64,102 +66,12 @@ static std::string get_arg(int argc, char *argv[],
 }
 
 // =====================================================================
-// BASIS FUNCTION DEFINITIONS
+// BASIS FUNCTION DEFINITIONS + EVALUATION
 // =====================================================================
-
-struct BasisFuncDef {
-    double A;               // ΔR^{−A}
-    double B;               // [ln(ΔR)]^B
-    int    m;               // (p_T^i p_T^k / p_T²)^m
-    double E;               // angular upper cut: Θ(ΔR < E)
-    std::string label;
-};
-
-static std::vector<BasisFuncDef> get_default_basis() {
-    return {
-        {1.0, 4.0, 1, 0.4, "g1: dR^{-3/2} ln^4 z^1  [dR<0.1]"},   // eq 4.15
-        {1.0, 3.0, 1, 0.4, "g2: dR^{-1} z^2  [dR<0.2]"},           // eq 4.16
-        {1.0, 2.0, 1, 0.4, "g3: dR^{-3/2} z^2  [dR<0.2]"},         // eq 4.17
-        {1.0, 1.0, 1, 0.4, "g4: dR^{-1} ln^4 z^2  [dR<0.2]"},      // eq 4.18
-        {1.0, 0.0, 1, 0.4, "g5: dR^{-3/2} ln^4 z^2  [dR<0.2]"},    // eq 4.19
-        
-        {0.0, 4.0, 1, 0.4, "g6: "},   // eq 4.15
-        {0.0, 3.0, 1, 0.4, "g7: "},           // eq 4.16
-        {0.0, 2.0, 1, 0.4, "g8:"},         // eq 4.17
-        {0.0, 1.0, 1, 0.4, "g9: ]"},      // eq 4.18
-        {0.0, 0.0, 1, 0.4, "g10"},    // eq 4.19
-        
-        {-1.0, 4.0, 1, 0.4, "g11: "},   // eq 4.15
-        {-1.0, 3.0, 1, 0.4, "g12: "},           // eq 4.16
-        {-1.0, 2.0, 1, 0.4, "g13:"},         // eq 4.17
-        {-1.0, 1.0, 1, 0.4, "g14: ]"},      // eq 4.18
-        {-1.0, 0.0, 1, 0.4, "g15"},    // eq 4.19
-
-	    {1.0, 4.0, 2, 0.4, "g1: dR^{-3/2} ln^4 z^1  [dR<0.1]"},   // eq 4.15
-        {1.0, 3.0, 2, 0.4, "g2: dR^{-1} z^2  [dR<0.2]"},           // eq 4.16
-        {1.0, 2.0, 2, 0.4, "g3: dR^{-3/2} z^2  [dR<0.2]"},         // eq 4.17
-        {1.0, 1.0, 2, 0.4, "g4: dR^{-1} ln^4 z^2  [dR<0.2]"},      // eq 4.18
-        {1.0, 0.0, 2, 0.4, "g5: dR^{-3/2} ln^4 z^2  [dR<0.2]"},    // eq 4.19
-
-        {0.0, 4.0, 2, 0.4, "g6: "},   // eq 4.15
-        {0.0, 3.0, 2, 0.4, "g7: "},           // eq 4.16
-        {0.0, 2.0, 2, 0.4, "g8:"},         // eq 4.17
-        {0.0, 1.0, 2, 0.4, "g9: ]"},      // eq 4.18
-        {0.0, 0.0, 2, 0.4, "g10"},    // eq 4.19
-        {-1.0, 4.0, 2, 0.4, "g11: "},   // eq 4.15
-        {-1.0, 3.0, 2, 0.4, "g12: "},           // eq 4.16
-        {-1.0, 2.0, 2, 0.4, "g13:"},         // eq 4.17
-        {-1.0, 1.0, 2, 0.4, "g14: ]"},      // eq 4.18
-        {-1.0, 0.0, 2, 0.4, "g15"},    // eq 4.19
-    };
-}
-
-// =====================================================================
-// BASIS FUNCTION EVALUATION
-// =====================================================================
-
-/// Evaluate all basis functions for one jet.
-/// dR_min screens the small-angle divergence in ΔR^{−A}.
-static std::vector<double> evaluate_basis(
-        const std::vector<BasisFuncDef> &basis,
-        double ptjet,
-        const std::vector<double> &cpt,
-        const std::vector<double> &ceta,
-        const std::vector<double> &cphi,
-        double dR_min)
-{
-    const int nb = (int)basis.size();
-    std::vector<double> g(nb, 0.0);
-    if (ptjet <= 0.0) return g;
-
-    const double pt2 = 120*120;//change for testing to be the norm (HB 4/11/26), was ptjet * ptjet;
-    const size_t nc  = cpt.size();
-
-    for (size_t i = 0; i < nc; ++i) {
-        if (cpt[i] <= 0.0) continue;
-        for (size_t k = i + 1; k < nc; ++k) {
-            if (cpt[k] <= 0.0) continue;
-
-            const double dphi = TVector2::Phi_mpi_pi(cphi[i] - cphi[k]);
-            const double deta = ceta[i] - ceta[k];
-            const double dR   = std::sqrt(deta * deta + dphi * dphi);
-            if (dR <= dR_min) continue;   // screen small-angle divergence
-
-            const double lndR = std::log(dR);
-            const double z    = (cpt[i] * cpt[k]) / pt2;
-
-            for (int j = 0; j < nb; ++j) {
-                const auto &bf = basis[j];
-                if (dR >= bf.E) continue;
-                double val = std::pow(dR, -bf.A);
-                if (bf.B > 0.0) val *= std::pow(lndR, bf.B);
-                val *= std::pow(z, bf.m);
-                g[j] += val;
-            }
-        }
-    }
-    return g;
-}
+// The basis (Cambridge/Aachen R=0.1 subjet pT power sums, g_n = Σ pT^n
+// for n = 3..10) and its self-contained reclustering live in
+// subjet_basis.h, shared with the plotting tool so the fit and the
+// validation plots use an identical definition.
 
 // =====================================================================
 // Print dot-product distribution diagnostics
@@ -286,6 +198,7 @@ int main(int argc, char *argv[]) {
     const double pt_min  = std::stod(get_arg(argc, argv, "--pt-min", "0.0"));
     const double pt_max  = std::stod(get_arg(argc, argv, "--pt-max", "1e9"));
     const double dR_min  = std::stod(get_arg(argc, argv, "--dR-min", "0.001"));
+    const double subjet_R = std::stod(get_arg(argc, argv, "--subjet-R", "0.1"));
 
     const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "200000"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
@@ -313,7 +226,7 @@ int main(int argc, char *argv[]) {
     for (int j = 0; j < nphys; ++j)
         std::cout << "  [" << j << "] " << basis[j].label << std::endl;
     std::cout << "  [N] normalisation (analytic)" << std::endl;
-    std::cout << "  dR_min = " << dR_min << std::endl << std::endl;
+    std::cout << "  subjet_R = " << subjet_R << " (C/A)" << std::endl << std::endl;
 
     // ---- Read TARGET sample ----
     std::vector<double> c(nphys, 0.0);
@@ -344,7 +257,7 @@ int main(int argc, char *argv[]) {
                     if (!tcp||!tce||!tcf) die("missing target branches");
                     if (j>=(int)tcp->size()||j>=(int)tce->size()||j>=(int)tcf->size()) continue;
                     double w = (double)tw; tgt_sumW += w; ++tgt_njets;
-                    auto gv = evaluate_basis(basis, x, tcp->at(j), tce->at(j), tcf->at(j), dR_min);
+                    auto gv = evaluate_basis(basis, x, tcp->at(j), tce->at(j), tcf->at(j), subjet_R);
                     for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
                 }
             }
@@ -362,7 +275,7 @@ int main(int argc, char *argv[]) {
                 if (x < pt_min || x > pt_max) continue;
                 if (!tcp||!tce||!tcf) die("missing target branches");
                 double w = (double)tw; tgt_sumW += w; ++tgt_njets;
-                auto gv = evaluate_basis(basis, x, *tcp, *tce, *tcf, dR_min);
+                auto gv = evaluate_basis(basis, x, *tcp, *tce, *tcf, subjet_R);
                 for (int b = 0; b < nphys; ++b) c[b] += w * gv[b];
             }
         }
@@ -424,7 +337,7 @@ int main(int argc, char *argv[]) {
                 if (!sc||!cp||!ce||!cf) die("missing constituent branches");
                 if (j>=(int)cp->size()||j>=(int)ce->size()||j>=(int)cf->size()) continue;
                 pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-                gvals.push_back(evaluate_basis(basis,x,cp->at(j),ce->at(j),cf->at(j),dR_min));
+                gvals.push_back(evaluate_basis(basis,x,cp->at(j),ce->at(j),cf->at(j),subjet_R));
                 ocp.push_back(cp->at(j)); oce.push_back(ce->at(j)); ocf.push_back(cf->at(j));
             }
         }
@@ -444,7 +357,7 @@ int main(int argc, char *argv[]) {
             double x=pv; if (x<pt_min||x>pt_max) continue;
             if (!sc||!cp||!ce||!cf) die("missing constituent branches");
             pts.push_back(x); base_w.push_back((double)wt); sources.push_back(src);
-            gvals.push_back(evaluate_basis(basis,x,*cp,*ce,*cf,dR_min));
+            gvals.push_back(evaluate_basis(basis,x,*cp,*ce,*cf,subjet_R));
             ocp.push_back(*cp); oce.push_back(*ce); ocf.push_back(*cf);
         }
     }
@@ -475,7 +388,7 @@ int main(int argc, char *argv[]) {
     // ---- Basis statistics & auto lr ----
     double max_abs_g = 0.0;
     {
-        std::cout << "Basis stats (scaled, dR_min=" << dR_min << "):" << std::endl;
+        std::cout << "Basis stats (scaled, subjet_R=" << subjet_R << "):" << std::endl;
         for (int j=0; j<nphys; ++j) {
             double mn=1e30, mx=-1e30, su=0, su2=0;
             int nzero = 0;
@@ -720,14 +633,14 @@ int main(int argc, char *argv[]) {
 
     TTree tm("meta","fit metadata");
     auto la = lam; la.push_back(lam_norm);
-    std::string bl = "eec_5+norm_analytic";
+    std::string bl = "subjet_ca_ptpow_3to10+norm_analytic";
     tm.Branch("lambda",&la); tm.Branch("lambda_norm",&lam_norm,"lambda_norm/D");
     tm.Branch("basis",&bl);
     tm.Branch("pt_min",const_cast<double*>(&pt_min),"pt_min/D");
     tm.Branch("pt_max",const_cast<double*>(&pt_max),"pt_max/D");
     tm.Branch("best_loss",const_cast<double*>(&best_loss),"best_loss/D");
-    double dr_out = dR_min;
-    tm.Branch("dR_min",&dr_out,"dR_min/D");
+    double sr_out = subjet_R;
+    tm.Branch("subjet_R",&sr_out,"subjet_R/D");
     tm.Fill();
     tw.Write(); tm.Write(); of.Close(); in_file.Close();
 

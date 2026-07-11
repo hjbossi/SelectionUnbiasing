@@ -8,6 +8,19 @@ This repo provides a small pipeline to:
 2. Learn per-jet unbiasing weights that match target moments of basis functions.
 3. Validate the result with pT and EEC comparisons.
 
+## Basis functions
+For each R=0.4 jet, its constituents are reclustered into R=0.1 subjets with
+the Cambridge/Aachen (C/A) algorithm, and the basis functions are the subjet
+pT power sums
+
+    g_n = Σ_subjets (pT_subjet)^n ,   n = 3, 4, ..., 10   (8 functions)
+
+The C/A reclustering (inclusive, E-scheme, massless constituents) and the
+basis evaluation live in `AnalysisCode/subjet_basis.h`, which is shared by
+`unbias_weights.cc` and `plot_unbias_weights.cc` so the fit and the validation
+plots use an identical definition. The implementation is self-contained (no
+FastJet dependency), so the tools build with `root-config` alone.
+
 ## Requirements
 - ROOT with C++17 support
 - A dataset of ROOT files with a tree like `tgenBefore` containing:
@@ -72,6 +85,7 @@ Outputs:
 
 ## Files
 - `AnalysisCode/startBasis.C`: build biased/unbiased toy samples
+- `AnalysisCode/subjet_basis.h`: shared C/A R=0.1 reclustering + subjet pT power-sum basis (g_n)
 - `AnalysisCode/unbias_weights.cc`: learn unbiasing weights (Adam optimizer)
 - `AnalysisCode/plot_unbias_weights.cc`: validate unbiasing with pT/EEC/basis plots
 - `AnalysisCode/plot_loss_from_nohup.py`: plot loss vs iteration from logs
@@ -80,7 +94,7 @@ Outputs:
 
 ## Notes
 - `--adam-lr auto` (default) computes a safe learning rate based on max |g|.
-- `--dR-min` screens small-angle divergences in basis functions.
+- `--subjet-R` (default 0.1) sets the C/A subjet reclustering radius.
 - For array-style trees, `nJets` + arrays are expected; for flat trees, `pt` is a scalar.
 
 ## Citation

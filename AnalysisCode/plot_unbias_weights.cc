@@ -19,6 +19,8 @@
 #include <TMath.h>
 #include <TLine.h>
 
+#include "subjet_basis.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
@@ -40,85 +42,12 @@ static std::string get_arg(int argc, char* argv[], const std::string &flag, cons
 }
 
 // =====================================================================
-// BASIS FUNCTION DEFINITIONS
+// BASIS FUNCTION DEFINITIONS + EVALUATION
 // =====================================================================
-
-struct BasisFuncDef {
-    double A;               // ΔR^{−A}
-    double B;               // [ln(ΔR)]^B
-    int    m;               // (p_T^i p_T^k / p_T²)^m
-    double E;               // angular upper cut: Θ(ΔR < E)
-    std::string label;
-};
-
-static std::vector<BasisFuncDef> get_default_basis() {
-    return {
-        {1.0, 4.0, 1, 0.4, "g1: dR^{-3/2} ln^4 z^1  [dR<0.1]"},   // eq 4.15
-        {1.0, 3.0, 1, 0.4, "g2: dR^{-1} z^2  [dR<0.2]"},           // eq 4.16
-        {1.0, 2.0, 1, 0.4, "g3: dR^{-3/2} z^2  [dR<0.2]"},         // eq 4.17
-        {1.0, 1.0, 1, 0.4, "g4: dR^{-1} ln^4 z^2  [dR<0.2]"},      // eq 4.18
-        {1.0, 0.0, 1, 0.4, "g5: dR^{-3/2} ln^4 z^2  [dR<0.2]"},    // eq 4.19
-        
-        {0.0, 4.0, 1, 0.4, "g6: "},   // eq 4.15
-        {0.0, 3.0, 1, 0.4, "g7: "},           // eq 4.16
-        {0.0, 2.0, 1, 0.4, "g8:"},         // eq 4.17
-        {0.0, 1.0, 1, 0.4, "g9: ]"},      // eq 4.18
-        {0.0, 0.0, 1, 0.4, "g10"},    // eq 4.19
-        
-        {-1.0, 4.0, 1, 0.4, "g11: "},   // eq 4.15
-        {-1.0, 3.0, 1, 0.4, "g12: "},           // eq 4.16
-        {-1.0, 2.0, 1, 0.4, "g13:"},         // eq 4.17
-        {-1.0, 1.0, 1, 0.4, "g14: ]"},      // eq 4.18
-        {-1.0, 0.0, 1, 0.4, "g15"},    // eq 4.19
-    };
-}
-
-// =====================================================================
-// BASIS FUNCTION EVALUATION
-// =====================================================================
-
-/// Evaluate all basis functions for one jet.
-/// dR_min screens the small-angle divergence in ΔR^{−A}.
-static std::vector<double> evaluate_basis(
-        const std::vector<BasisFuncDef> &basis,
-        double ptjet,
-        const std::vector<double> &cpt,
-        const std::vector<double> &ceta,
-        const std::vector<double> &cphi,
-        double dR_min)
-{
-    const int nb = (int)basis.size();
-    std::vector<double> g(nb, 0.0);
-    if (ptjet <= 0.0) return g;
-
-    const double pt2 = ptjet * ptjet;
-    const size_t nc  = cpt.size();
-
-    for (size_t i = 0; i < nc; ++i) {
-        if (cpt[i] <= 0.0) continue;
-        for (size_t k = i + 1; k < nc; ++k) {
-            if (cpt[k] <= 0.0) continue;
-
-            const double dphi = TVector2::Phi_mpi_pi(cphi[i] - cphi[k]);
-            const double deta = ceta[i] - ceta[k];
-            const double dR   = std::sqrt(deta * deta + dphi * dphi);
-            if (dR <= dR_min) continue;   // screen small-angle divergence
-
-            const double lndR = std::log(dR);
-            const double z    = (cpt[i] * cpt[k]) / pt2;
-
-            for (int j = 0; j < nb; ++j) {
-                const auto &bf = basis[j];
-                if (dR >= bf.E) continue;
-                double val = std::pow(dR, -bf.A);
-                if (bf.B > 0.0) val *= std::pow(lndR, bf.B);
-                val *= std::pow(z, bf.m);
-                g[j] += val;
-            }
-        }
-    }
-    return g;
-}
+// The basis (Cambridge/Aachen R=0.1 subjet pT power sums, g_n = Σ pT^n
+// for n = 3..10) and its self-contained reclustering live in
+// subjet_basis.h, shared with unbias_weights.cc so the fit and these
+// validation plots use an identical definition.
 
 static void set_logx_range_from_content(TH1D *h1, TH1D *h2, TH1D *h3) {
   double xmin = std::numeric_limits<double>::infinity();
@@ -469,8 +398,6 @@ int main(int argc, char* argv[]) {
       std::vector<BasisFuncDef> basis = get_default_basis();
       const int nphys = (int)basis.size();
 
-      std::vector<double> min = {6.396393e04*0.001, 5.151869e-01*0.001,5.468804*0.001,2.700238e02*0.001, 4.075668e03*0.001 };
-      std::vector<double> max = {6.396393e04*1000, 5.151869e-01*1000,5.468804*1000,2.700238e02*1000, 4.075668e03*1000 };
       int nbins = 20; // Desired number of log bins
 
        
@@ -483,19 +410,22 @@ int main(int argc, char* argv[]) {
       std::vector<double> gmax_total(nphys, 0.0);
       std::vector<double> gmin_target(nphys, std::numeric_limits<double>::infinity());
       std::vector<double> gmax_target(nphys, 0.0);
-      for (int k = 0; k < nphys; ++k) { 
-        double logmin = TMath::Log10(10e-5);
-        double logmax = TMath::Log10(10e5);
+      for (int k = 0; k < nphys; ++k) {
+        // g_n = Σ pT^n grows steeply with n; size the log range so the
+        // edges always cover the data (display auto-ranges below).
+        const int nexp = basis[k].n;
+        double logmin = -2.0;
+        double logmax = nexp * TMath::Log10(300.0) + 2.0;
         double binwidth = (logmax - logmin) / nbins;
         double *edges = new double[nbins + 1];
 
         for (int i = 0; i <= nbins; i++) {
             edges[i] = pow(10, logmin + i * binwidth);
         }
-       
-        hgw_base[k] = new TH1D(Form("hThetaW_base_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);
-        hgw_total[k] = new TH1D(Form("hThetaW_total_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);
-        hgw_target[k] = new TH1D(Form("hThetaW_target_%d", k), Form("theta basis %d; g_%d; entries", k+1, k+1),  nbins, edges);             
+
+        hgw_base[k] = new TH1D(Form("hThetaW_base_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
+        hgw_total[k] = new TH1D(Form("hThetaW_total_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
+        hgw_target[k] = new TH1D(Form("hThetaW_target_%d", k), Form("basis g_%d; g_%d; entries", nexp, nexp),  nbins, edges);
         hgw_base[k]->Sumw2();
         hgw_total[k]->Sumw2();
         hgw_target[k]->Sumw2();
@@ -541,7 +471,7 @@ int main(int argc, char* argv[]) {
           if (!wconst_pt || !wconst_eta || !wconst_phi) continue;
           if (wconst_pt->size() != wconst_eta->size() || wconst_pt->size() != wconst_phi->size()) continue;
           // (basis, x, tcp->at(j), tce->at(j), tcf->at(j), dR_min);
-          auto g = evaluate_basis(basis, wpt, *wconst_pt, *wconst_eta, *wconst_phi, 0.001);
+          auto g = evaluate_basis(basis, wpt, *wconst_pt, *wconst_eta, *wconst_phi, kSubjetR);
           for (int k = 0; k < nphys; ++k) {
             const double gv = std::abs(g[k]);
             hgw_base[k]->Fill(gv, ww_base);
@@ -580,7 +510,7 @@ int main(int argc, char* argv[]) {
           if (!tconst_pt2 || !tconst_eta2 || !tconst_phi2) continue;
           if (tconst_pt2->size() != tconst_eta2->size() || tconst_pt2->size() != tconst_phi2->size()) continue;
           //const std::vector<double> g = compute_theta_basis(tpt2, *tconst_pt2, *tconst_eta2, *tconst_phi2);
-          auto g = evaluate_basis(basis, tpt2, *tconst_pt2, *tconst_eta2, *tconst_phi2, 0.001);
+          auto g = evaluate_basis(basis, tpt2, *tconst_pt2, *tconst_eta2, *tconst_phi2, kSubjetR);
 
           for (int k = 0; k < nphys; ++k) {
             if(i == 0 ){
@@ -610,7 +540,7 @@ int main(int argc, char* argv[]) {
       // }
       // Overlay plots with ratio panel
       TCanvas *ctw = new TCanvas("c_theta_basis_weighted", "theta basis weighted", 6500, 5000);
-      ctw->Divide(5, 3);
+      ctw->Divide(4, 2);
       TLegend *legw = new TLegend(0.12, 0.72, 0.88, 0.88);
       legw->AddEntry(hgw_target[0], Form("unbiased target %s", target_tree.c_str()), "l");
       legw->AddEntry(hgw_base[0], "biased sample (base weight)", "l");
