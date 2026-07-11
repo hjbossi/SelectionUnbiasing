@@ -59,7 +59,7 @@ int main(int argc, char* argv[]) {
   // Create Pythia instance and set it up to generate hard QCD processes
   // above pTHat = 20 GeV for pp collisions at 14 TeV.
   Pythia pythia;
-  int nEvent = 1e5;
+  int nEvent = 10;//1e5;
   
   // pp beams
   pythia.readString("Beams:idA = 2212");
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
   if (!pythia.init()) return 1;
 
   // Create file on which histogram(s) can be saved.
-  TFile* outFile = new TFile("UnbiasingTest_PYTHIApp_pthatmin50_121825.root", "RECREATE");
+  TFile* outFile = new TFile("UnbiasingTest_PYTHIApp_pthatmin50_071125.root", "RECREATE");
   TTree*    tree = new TTree("tgenBefore","Pythia8 event tree");
   
   // ------------------ Define the tree ----------------
@@ -100,11 +100,17 @@ int main(int argc, char* argv[]) {
   float eta[MAXJETS];
   float phi[MAXJETS];
   float mass[MAXJETS];
+  Int_t nSubJets[MAXJETS];
   
   // consituent variables - have this be a vector of vectors the size of the number of jets 
   std::vector<std::vector<double>> const_pt; 
   std::vector<std::vector<double>> const_eta; 
   std::vector<std::vector<double>> const_phi; 
+  
+  // subjet variables - have this be a vector of vectors the size of the number of subjets
+  std::vector<std::vector<double>> subjet_pt; 
+  std::vector<std::vector<double>> subjet_eta; 
+  std::vector<std::vector<double>> subjet_phi; 
   
   // event variables 
   float weight;
@@ -120,11 +126,17 @@ int main(int argc, char* argv[]) {
   tree->Branch("eta",eta,"eta[nJets]/F");
   tree->Branch("phi",phi,"phi[nJets]/F");
   tree->Branch("mass",mass, "mass[nJets]/F"); 
-  
+  tree->Branch("nSubJets",nSubJets, "nSubJets[nJets]/I"); 
+
   // branch for constituent variables
   tree->Branch("const_pt", &const_pt); 
   tree->Branch("const_eta", &const_eta); 
   tree->Branch("const_phi", &const_phi); 
+  
+  // branch for subjet variables
+  tree->Branch("subjet_pt", &subjet_pt); 
+  tree->Branch("subjet_eta", &subjet_eta); 
+  tree->Branch("subjet_phi", &subjet_phi); 
 
   // branch for event 
   tree->Branch("weight",&weight,"weight/F");
@@ -145,9 +157,15 @@ int main(int argc, char* argv[]) {
     const_eta.clear();
     const_phi.clear();
     
+    subjet_pt.clear();
+    subjet_eta.clear();
+    subjet_phi.clear();
+    
     // use a classic jet definition - antiKT jets - 0.4 
     fastjet::JetDefinition antiKT = fastjet::JetDefinition( fastjet::antikt_algorithm, 0.4, fastjet::E_scheme, fastjet::Best);
+    fastjet::JetDefinition CA3    = fastjet::JetDefinition( fastjet::cambridge_algorithm, 0.3, fastjet::E_scheme, fastjet::Best);
 
+    
         // Collect final-state particles for jet stuff
         std::vector<fastjet::PseudoJet> particles;
         for (int i = 0; i < pythia.event.size(); ++i) {
@@ -173,14 +191,13 @@ int main(int argc, char* argv[]) {
         
 
         
-
-        
         for (size_t i = 0; i < jets.size(); ++i) {
           const fastjet::PseudoJet &jet = jets[i];
           pt[index]   = jet.pt(); 
           eta[index]  = jet.eta(); 
           phi[index]  = jet.phi(); 
           mass[index] = jet.m(); 
+          std::cout << "pt jet: " << jet.pt() << std::endl;
           
           // for each jet loop through the constituents
           std::vector<fastjet::PseudoJet> constituents = jet.constituents();
@@ -196,8 +213,28 @@ int main(int argc, char* argv[]) {
           }
           const_pt.emplace_back(jetConst_pt); 
           const_eta.emplace_back(jetConst_eta); 
-          const_phi.emplace_back(jetConst_phi);   
+          const_phi.emplace_back(jetConst_phi);  
+          
+          // recluster the constituents into C/A jets
+          fastjet::ClusterSequence cs2(constituents, CA);
+          std::vector<fastjet::PseudoJet> subjets = sorted_by_pt(cs2.inclusive_jets(0.0));
+          nSubJets[index] = subjets.size();
+          std::vector<double> subjetConst_pt; 
+          std::vector<double> subjetConst_eta;
+          std::vector<double> subjetConst_phi;
+      
+          for (const auto &s : subjets) {
+            subjetConst_pt.push_back(s.pt()); 
+            subjetConst_eta.push_back(s.eta()); 
+            subjetConst_phi.push_back(s.phi()); 
+            std::cout << "pt subjet: " << s.pt() << std::endl;
+          }
+          
+          subjet_pt.emplace_back(subjetConst_pt); 
+          subjet_eta.emplace_back(subjetConst_eta); 
+          subjet_phi.emplace_back(subjetConst_phi); 
                     
+          index++;
        } // end loop over the jets
        tree->Fill(); 
         
