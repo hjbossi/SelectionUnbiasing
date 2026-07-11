@@ -148,41 +148,6 @@ static void set_logx_range_from_content(TH1D *h1, TH1D *h2, TH1D *h3) {
   h3->GetXaxis()->SetRangeUser(newmin, newmax);
 }
 
-// static std::vector<double> compute_theta_basis(double ptjet,
-//                                                const std::vector<double> &cpt,
-//                                                const std::vector<double> &ceta,
-//                                                const std::vector<double> &cphi) {
-//   std::vector<double> g(5, 0.0);
-//   if (ptjet <= 0.0) return g;
-//   const size_t nconst = cpt.size();
-//   for (size_t i = 0; i < nconst; ++i) {
-//     if (cpt[i] <= 0.0) continue;
-//     for (size_t k = i + 1; k < nconst; ++k) {
-//       if (cpt[k] <= 0.0) continue;
-//       double dphi = TVector2::Phi_mpi_pi(cphi[i] - cphi[k]);
-//       double deta = ceta[i] - ceta[k];
-//       double theta = std::sqrt(deta * deta + dphi * dphi);
-//       if (theta <= 0.0) continue;
-//       double lnth = std::log(theta);
-//       double ln4 = std::pow(lnth, 4);
-//       double ratio = (cpt[i] * cpt[k]) / (ptjet * ptjet);
-//       double ratio2 = ratio * ratio;
-//       double t_m1 = std::pow(theta, -1.0);
-//       double t_m32 = std::pow(theta, -1.5);
-//       if (theta < 0.1) {
-//         g[0] += t_m32 * ln4 * ratio;
-//       }
-//       g[1] += t_m1 * ratio2;
-//       if (theta < 0.2) {
-//         g[2] += t_m32 * ratio2;
-//         g[3] += t_m1 * ln4 * ratio2;
-//         g[4] += t_m32 * ln4 * ratio2;
-//       }
-//     }
-//   }
-//   return g;
-// }
-
 static void fill_eec(TH1D *h, const std::vector<double> &cpt,
                      const std::vector<double> &ceta,
                      const std::vector<double> &cphi,
@@ -512,6 +477,12 @@ int main(int argc, char* argv[]) {
       TH1D *hgw_base[nphys];
       TH1D *hgw_total[nphys];
       TH1D *hgw_target[nphys];
+      std::vector<double> gmin_base(nphys, std::numeric_limits<double>::infinity());
+      std::vector<double> gmax_base(nphys, 0.0);
+      std::vector<double> gmin_total(nphys, std::numeric_limits<double>::infinity());
+      std::vector<double> gmax_total(nphys, 0.0);
+      std::vector<double> gmin_target(nphys, std::numeric_limits<double>::infinity());
+      std::vector<double> gmax_target(nphys, 0.0);
       for (int k = 0; k < nphys; ++k) { 
         double logmin = TMath::Log10(10e-5);
         double logmax = TMath::Log10(10e5);
@@ -572,8 +543,15 @@ int main(int argc, char* argv[]) {
           // (basis, x, tcp->at(j), tce->at(j), tcf->at(j), dR_min);
           auto g = evaluate_basis(basis, wpt, *wconst_pt, *wconst_eta, *wconst_phi, 0.001);
           for (int k = 0; k < nphys; ++k) {
-            hgw_base[k]->Fill(abs(g[k]), ww_base);
-            hgw_total[k]->Fill(abs(g[k]), ww_total);
+            const double gv = std::abs(g[k]);
+            hgw_base[k]->Fill(gv, ww_base);
+            hgw_total[k]->Fill(gv, ww_total);
+            if (gv > 0.0) {
+              gmin_base[k] = std::min(gmin_base[k], gv);
+              gmax_base[k] = std::max(gmax_base[k], gv);
+              gmin_total[k] = std::min(gmin_total[k], gv);
+              gmax_total[k] = std::max(gmax_total[k], gv);
+            }
           }
         }
       }
@@ -608,7 +586,12 @@ int main(int argc, char* argv[]) {
             if(i == 0 ){
               std::cout << "g[" << k << "]: " << g[k] << " weight: " << tw2 <<  std::endl;
             }
-            hgw_target[k]->Fill(abs(g[k]), tw2);
+            const double gv = std::abs(g[k]);
+            hgw_target[k]->Fill(gv, tw2);
+            if (gv > 0.0) {
+              gmin_target[k] = std::min(gmin_target[k], gv);
+              gmax_target[k] = std::max(gmax_target[k], gv);
+            }
           }
         }
       }
@@ -653,7 +636,21 @@ int main(int argc, char* argv[]) {
         gPad->SetLogx();
         gPad->SetTicks(1,1);
         std::cout << "On canvas k=" << k << " then drawing hist with integral " << hgw_target[k]->Integral() << std::endl;
-        set_logx_range_from_content(hgw_target[k], hgw_base[k], hgw_total[k]);
+        // Use per-basis min/max from the actual g values to set display range.
+        double xmin = std::min({gmin_base[k], gmin_total[k], gmin_target[k]});
+        double xmax = std::max({gmax_base[k], gmax_total[k], gmax_target[k]});
+        if (std::isfinite(xmin) && xmax > xmin) {
+          const double logmin = std::log10(xmin);
+          const double logmax = std::log10(xmax);
+          const double span = std::max(1e-6, logmax - logmin);
+          const double newmin = std::pow(10.0, logmin - 0.05 * span);
+          const double newmax = std::pow(10.0, logmax + 0.05 * span);
+          hgw_target[k]->GetXaxis()->SetRangeUser(newmin, newmax);
+          hgw_base[k]->GetXaxis()->SetRangeUser(newmin, newmax);
+          hgw_total[k]->GetXaxis()->SetRangeUser(newmin, newmax);
+        } else {
+          set_logx_range_from_content(hgw_target[k], hgw_base[k], hgw_total[k]);
+        }
         hgw_target[k]->Draw("E1");
         hgw_base[k]->Draw("E1 same");
         hgw_total[k]->Draw("E1 same");
