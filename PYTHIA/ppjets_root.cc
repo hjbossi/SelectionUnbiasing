@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
   // Create Pythia instance and set it up to generate hard QCD processes
   // above pTHat = 20 GeV for pp collisions at 14 TeV.
   Pythia pythia;
-  int nEvent = 5e6;
+  int nEvent = 1e6;
 
   // pp beams
   pythia.readString("Beams:idA = 2212");
@@ -101,14 +101,14 @@ int main(int argc, char* argv[]) {
   if (!pythia.init()) return 1;
 
   // Create file on which histogram(s) can be saved.
-  TFile* outFile = new TFile("UnbiasingTest_PYTHIApp_pthatmin50_071125.root", "RECREATE");
+  TFile* outFile = new TFile("UnbiasingTest_PYTHIApp_pthatmin50_071125_1M.root", "RECREATE");
   TTree*    tree = new TTree("tgenBefore","Pythia8 event tree");
 
   // ------------------ subjet radius scan configuration ----------------
   // Recluster the jet constituents into Cambridge-Aachen subjets for each of
   // these radii. rTag = 1..nRadii maps to R = rTag * dR = 0.01 .. 0.20.
-  const int    nRadii = 20;     // number of radii: 0.01, 0.02, ..., 0.20
-  const double dR     = 0.01;   // radius step (also the smallest radius)
+  const int    nRadii = 10;     // number of radii: 0.01, 0.02, ..., 0.20
+  const double dR     = 0.02;   // radius step (also the smallest radius)
 
   // ------------------ Define the tree ----------------
   // jet variables

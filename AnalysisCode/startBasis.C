@@ -72,7 +72,7 @@ void FillChain(TChain &chain, vector<string> &files) {
 // ----------------------------------------------------
 
 // main function
-void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput/",
+void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput/v3/",
                 const char* outFile  = "startBasis_output.root",
                 double pTLow = 100,
                 double pTHigh = 140,
@@ -408,7 +408,7 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   leg->SetBorderSize(0);
   leg->Draw();
 
-  c->SaveAs("jetPtShift_TChainReader.pdf");
+  c->SaveAs(Form("jetPtShift_TChainReader_%s.pdf", "072226"));
 
   // Save histograms and trees for downstream unbiasing.
   hPtX->Write();

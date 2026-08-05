@@ -453,12 +453,12 @@ int main(int argc, char *argv[]) {
     const std::string run_mode     = get_arg(argc, argv, "--mode",          "run");
     const std::string scale_mode   = get_arg(argc, argv, "--scale-basis",   "target");
     const std::string lr_spec      = get_arg(argc, argv, "--adam-lr",       "auto");
-    const std::string subjet_source = get_arg(argc, argv, "--subjet-source", "auto");
+    const std::string subjet_source = get_arg(argc, argv, "--subjet-source", "precomputed");
 
     // ---- Basis configuration flags (VERSION 6) ----
-    const std::string basis_eec_s  = get_arg(argc, argv, "--basis-eec",     "off");
-    const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",  "");
-    const std::string subjet_powers_s = get_arg(argc, argv, "--subjet-powers", "");
+    const std::string basis_eec_s  = get_arg(argc, argv, "--basis-eec",     "on");
+    const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",  "0.1,0.2");
+    const std::string subjet_powers_s = get_arg(argc, argv, "--subjet-powers", "1,2,3,4,5,6,7,8,9,10,11,12");
 
     const double pt_min  = std::stod(get_arg(argc, argv, "--pt-min", "0.0"));
     const double pt_max  = std::stod(get_arg(argc, argv, "--pt-max", "1e9"));
@@ -466,7 +466,7 @@ int main(int argc, char *argv[]) {
     const double subjet_R = std::stod(get_arg(argc, argv, "--subjet-R", "0.1"));
     const double eec_norm = std::stod(get_arg(argc, argv, "--eec-norm", "120.0"));
 
-    const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "200000"));
+    const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "20"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
     const double tol             = std::stod(get_arg(argc, argv, "--tol",            "1e-6"));
     const double adam_beta1      = std::stod(get_arg(argc, argv, "--adam-beta1",     "0.9"));
