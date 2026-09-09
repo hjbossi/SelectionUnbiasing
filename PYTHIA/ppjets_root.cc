@@ -2,46 +2,30 @@
 // Hannah Bossi, <hannah.bossi@cern.ch>
 // December 18th, 2025
 //
-// MODIFIED: Instead of reclustering constituents into a single R=0.3 Cambridge-Aachen
-//           subjet definition, this version reclusters over a range of C/A radii,
-//           R = 0.01, 0.02, ..., 0.20 (i.e. 0.01 to 0.20 in steps of 0.01).
-//           The subjets found for each radius are stored in their own tree branches,
-//           named by radius:  subjet_pt_R0p01 ... subjet_pt_R0p20  (0pXX == 0.XX),
-//           and likewise for eta, phi, and nSubJets.
-
-
+// Clusters anti-kT R=0.4 jets and, for each jet, reclusters its constituents
+// into Cambridge-Aachen subjets over a range of radii,
+// R = 0.01, 0.02, ..., 0.20 (0.01 to 0.20 in steps of 0.01).
+// The subjets found for each radius are stored in their own tree branches,
+// named by radius:  subjet_pt_R0p01 ... subjet_pt_R0p20  (0pXX == 0.XX),
+// and likewise for eta, phi, and nSubJets.
+//
 // --------------------- default preamble below -----------------------------
 // based off of main143.cc, which is one of the standard pythia example codes
 // main143.cc is a part of the PYTHIA event generator.
 // Copyright (C) 2025 Torbjorn Sjostrand.
 // PYTHIA is licenced under the GNU GPL v2 or later, see COPYING for details.
 // Please respect the MCnet Guidelines, see GUIDELINES for details.
-
+//
 // Authors: Rene Brun, Axel Naumann and Bernhard Meirose
-
+//
 // Keywords: analysis; root
-
-// This is a simple test program, based on main101.cc,
-// but modified to use ROOT for histogramming.
-// It studies the charged multiplicity distribution at the LHC.
-
-// WARNING: for currently unknown reasons it may hang
-// with an empty canvas on a Mac.
-
 // ---------------------------------------------------------------------------
 
 // Header file to access Pythia 8 program elements.
 #include "Pythia8/Pythia.h"
 
-// ROOT, for histogramming.
-#include "TH1.h"
-
 // ROOT, TTree for writing output
 #include "TTree.h"
-#include "TMath.h"
-
-// ROOT, for interactive graphics.
-#include "TVirtualPad.h"
 #include "TApplication.h"
 
 // jet stuff
@@ -53,10 +37,10 @@
 
 // standard library
 #include <cstdio>   // for snprintf (branch-name construction)
+#include <iostream>
 #include <vector>
 
 #define MAXJETS 100
-#define MAXCONST 100
 
 
 using namespace Pythia8;
@@ -81,14 +65,11 @@ int main(int argc, char* argv[]) {
   pythia.readString("HardQCD:all = on");//jets
   pythia.readString("PhaseSpace:pTHatMin = 50."); // choose a lower pthatmin to avoid edge effects
   pythia.readString("PhaseSpace:pTHatMax = 200.");
-  pythia.init();
-
 
   // keeping some options here commented out just in case.
 
   // vincia = 2 // dire = 3
   //pythia.readString("PartonShowers:Model = 3");
-
 
   // SWITCH TO TURN ON/OFF Hadronization, default is on
   // pythia.readString("HadronLevel:Hadronize=  off");
@@ -114,7 +95,6 @@ int main(int argc, char* argv[]) {
   // jet variables
   Int_t nJets; // to track the number of this part of the tree
   float pt[MAXJETS];
-  float y[MAXJETS];
   float eta[MAXJETS];
   float phi[MAXJETS];
   float mass[MAXJETS];

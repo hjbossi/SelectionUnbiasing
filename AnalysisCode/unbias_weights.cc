@@ -2,46 +2,40 @@
 // =====================================================================
 // Event-by-event reweighting to remove selection bias from heavy-ion
 // jet samples, following the information-theoretic framework of
-// Andres, Bossi, Holguin (arXiv:2501.17219 and "Unbiasing_by_reweighting").
+// Andres, Bossi, Holguin (arXiv:2501.17219).
 //
 // Builds:
 //   c++ -std=c++17 -O2 unbias_weights.cc $(root-config --cflags --libs) -o unbias_weights
 //
 // =====================================================================
-// VERSION 4 — numerical fixes (unchanged, see below)
-// =====================================================================
-//   FIX 1: dR_min screen on the EEC basis (ΔR^{−A} diverges as ΔR→0).
-//   FIX 2: Auto learning rate = max_step / max(|g_scaled|).
-//   FIX 3: Exponent clamping |λ·g| ≤ max_exp (default 10).
-//   FIX 4: Enhanced debug diagnostics.
-//
-// =====================================================================
-// VERSION 6 — fully configurable, multi-family basis
-// =====================================================================
-//
-// The basis vectors used to construct the moments are now COMPLETELY
-// CONFIGURABLE and may mix two families in arbitrary combination:
+// The basis vectors used to construct the moments are fully configurable
+// and may mix two families in arbitrary combination:
 //
 //   (1) Energy-correlator (EEC) basis functions
 //         g = Σ_{i<k, ΔR<E} ΔR^{-A} [ln ΔR]^B z^m ,  z = pt_i pt_k / norm²
-//       (the historical basis from the older unbias_weights.cc), and
+//       and
 //
 //   (2) Subjet-pT moment basis functions
 //         g = Σ_{subjets at radius R} pT_subjet^n
 //       i.e. Mellin moments of the subjet-pT spectrum, for one or more
 //       subjet radii R and one or more powers n.
 //
-// The definitions, the two families, and the builder live in the new
+// The definitions, the two families, and the builder live in the
 // self-contained header  basis_functions.h.  Adding a term is a one-line
 // edit (or a command-line flag); adding a whole new *family* is a new
 // BasisFunction subclass — the reader and optimiser below never change.
 //
 // Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
 // time over a radius scan R = 0.01..0.20 and stores them in branches
-// "subjet_pt_R0pXX".  The subjet-moment functions CONSUME THOSE STORED
-// SUBJETS DIRECTLY (the desired workflow).  A reclustering fallback (via
-// subjet_basis.h) is retained only for older constituent-only ntuples,
-// selectable per radius through --subjet-source.
+// "subjet_pt_R0pXX".  The subjet-moment functions consume those stored
+// subjets directly.  A reclustering fallback (via subjet_basis.h) is
+// retained only for older constituent-only ntuples, selectable per radius
+// through --subjet-source.
+//
+// Numerical safeguards:
+//   * dR_min screen on the EEC basis (ΔR^{−A} diverges as ΔR→0).
+//   * Auto learning rate = max_step / max(|g_scaled|).
+//   * Exponent clamping |λ·g| ≤ max_exp (default 10).
 //
 // Workflow:
 //   (A) ppjets_root.cc  -> tgenBefore ntuple (constituents + subjet_pt_R0pXX)
@@ -52,7 +46,7 @@
 //       (--target-input defaults to --input, so one file suffices).
 //
 // Key flags (see full list in main):
-//   --basis-eec   {off,on}            enable the historical EEC family
+//   --basis-eec   {off,on}            enable the EEC family
 //   --eec-norm    <val>               z normalisation (default 120)
 //   --subjet-radii  "0.1,0.05"        subjet radii for the moment family
 //   --subjet-powers "3,4,...,10"      powers n for the moment family
@@ -60,30 +54,23 @@
 //   --subjet-source {auto,precomputed,recluster}   how to obtain subjets
 //   --dR-min      <val>               EEC small-angle screen (default 1e-3)
 //
-// The default basis (no basis flags) reproduces the previous analysis:
-// C/A R=0.1 subjet pT power sums, n = 3..10 — now sourced from the stored
-// subjets rather than on-the-fly reclustering.
+// The default basis (no basis flags) is the C/A R=0.1 subjet pT power sums,
+// n = 3..10, sourced from the stored subjets.
 // =====================================================================
 
 #include <TFile.h>
 #include <TTree.h>
-#include <TH1.h>
-#include <TVector2.h>
 
 #include "basis_functions.h"   // configurable multi-family basis framework
 #include "subjet_basis.h"      // recluster_ca_subjet_pts (reclustering fallback)
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <functional>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <map>
-#include <numeric>
 #include <set>
 #include <sstream>
 #include <string>
@@ -366,21 +353,18 @@ static void print_dot_diagnostics(
 static void print_gradient_diagnostics(
         const std::vector<double> &grad,
         const std::vector<double> &sj,
-        const std::vector<double> &d,
-        const std::vector<double> &c,
         const std::vector<double> &basis_scale,
         int nphys)
 {
-    // Physical gradient, and decompose what drives each component.
+    // Physical gradient, and the residual driver s_j behind each component.
     std::cout << "  gradient (physical dL/dlam_real):" << std::endl;
     double gnorm2 = 0.0;
     for (int k = 0; k < nphys; ++k) {
         const double gp = grad[k] * basis_scale[k];
         gnorm2 += gp * gp;
-        std::cout << "    grad[" << k << "] = " << std::scientific << gp;
-        // Show the residual driver s_j for diagonal term.
-        std::cout << "   (s[" << k << "]=" << sj[k] << ")";
-        std::cout << std::fixed << std::endl;
+        std::cout << "    grad[" << k << "] = " << std::scientific << gp
+                  << "   (s[" << k << "]=" << sj[k] << ")"
+                  << std::fixed << std::endl;
     }
     std::cout << "  |grad| = " << std::scientific << std::sqrt(gnorm2)
               << std::fixed << std::endl;
@@ -391,25 +375,17 @@ static void print_gradient_diagnostics(
 // =====================================================================
 static void print_covariance_diagnostics(
         const std::vector<std::vector<double>> &GG,
-        const std::vector<double> &Sj_unc,
         const std::vector<double> &d,
-        double S, double S_unc, int nphys)
+        double S, int nphys)
 {
     std::cout << "  Covariance diag (Cov[j,j]) and off-diag correlations:"
               << std::endl;
-    // Compute full covariance matrix (using unclamped stats).
+    // Cov uses the full d (weighted avg over all jets) and GG from the
+    // unclamped jets.
     std::vector<std::vector<double>> Cov(nphys, std::vector<double>(nphys, 0.0));
-    std::vector<double> d_unc(nphys, 0.0);
-    if (S_unc > 0) {
-        for (int j = 0; j < nphys; ++j)
-            d_unc[j] = Sj_unc[j] / S_unc;
-    }
     for (int j = 0; j < nphys; ++j)
         for (int k = j; k < nphys; ++k) {
-            const double gg = GG[j][k];
-            // Cov using the full d (weighted avg over all jets) and
-            // GG from unclamped jets.
-            Cov[j][k] = gg / S - d[j] * d[k];
+            Cov[j][k] = GG[j][k] / S - d[j] * d[k];
             Cov[k][j] = Cov[j][k];
         }
 
@@ -481,7 +457,6 @@ int main(int argc, char *argv[]) {
     const double lr_min_val      = std::stod(get_arg(argc, argv, "--lr-min",         "1e-12"));
 
     if (input.empty())        die("--input is required");
-    if (target_input.empty()) die("--target-input is required");  // only if --input was also empty
     if (run_mode != "run" && run_mode != "debug") die("--mode must be 'run' or 'debug'");
     if (subjet_source != "auto" && subjet_source != "precomputed" && subjet_source != "recluster")
         die("--subjet-source must be 'auto', 'precomputed', or 'recluster'");
@@ -708,7 +683,7 @@ int main(int argc, char *argv[]) {
     for (int it = 1; it <= MI; ++it) {
 
         // ---- Reweighted statistics ----
-        double S = 0, sumW2 = 0, S_unc = 0;
+        double S = 0, sumW2 = 0;
         int ncl = 0;
         std::vector<double> Sj(nphys, 0.0), Sj_unc(nphys, 0.0);
         std::vector<std::vector<double>> GG(nphys, std::vector<double>(nphys, 0.0));
@@ -723,7 +698,6 @@ int main(int argc, char *argv[]) {
             S += Wi; sumW2 += Wi*Wi;
             for (int j=0; j<nphys; ++j) Sj[j] += Wi * gvals[i][j];
             if (!cl) {
-                S_unc += Wi;
                 for (int j=0; j<nphys; ++j) {
                     double Wg = Wi * gvals[i][j];
                     Sj_unc[j] += Wg;
@@ -786,20 +760,19 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // ---- Residual drivers s_j (shared by diagnostics and gradient) ----
+        std::vector<double> sj(nphys, 0.0);
+        for (int j=0; j<nphys; ++j) {
+            double dn = c[j]+d[j];
+            if (std::fabs(dn)>1e-30) sj[j] = c[j]*r[j]/(dn*dn);
+        }
+
         // ---- Debug extras ----
         if (dbg && prn) {
             print_dot_diagnostics(lam, gvals, nphys, N);
-
-            // Gradient scalar weights s_j (computed below for gradient anyway).
-            std::vector<double> sj(nphys, 0.0);
-            for (int j=0; j<nphys; ++j) {
-                double dn = c[j]+d[j];
-                if (std::fabs(dn)>1e-30) sj[j] = c[j]*r[j]/(dn*dn);
-            }
-
             // Print covariance diagnostics every 10 iters in debug.
             if (it == 1 || it % 10 == 0 || last)
-                print_covariance_diagnostics(GG, Sj_unc, d, S, S_unc, nphys);
+                print_covariance_diagnostics(GG, d, S, nphys);
         }
 
         // ---- Convergence ----
@@ -811,11 +784,6 @@ int main(int argc, char *argv[]) {
         }
 
         // ---- Gradient ----
-        std::vector<double> sj(nphys, 0.0);
-        for (int j=0; j<nphys; ++j) {
-            double dn = c[j]+d[j];
-            if (std::fabs(dn)>1e-30) sj[j] = c[j]*r[j]/(dn*dn);
-        }
         std::vector<double> grad(nphys, 0.0);
         for (int k=0; k<nphys; ++k) {
             double acc = 0;
@@ -827,7 +795,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (dbg && prn)
-            print_gradient_diagnostics(grad, sj, d, c, bscale, nphys);
+            print_gradient_diagnostics(grad, sj, bscale, nphys);
 
         // ---- Adam update ----
         double bc1 = 1.0 - std::pow(adam_beta1, (double)it);

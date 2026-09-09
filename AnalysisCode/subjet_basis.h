@@ -1,22 +1,18 @@
 // subjet_basis.h
 // =====================================================================
-// Shared basis definition for the selection-unbiasing chain.
+// Self-contained Cambridge/Aachen subjet reclustering.
 //
-// New basis (replaces the old EEC-style ΔR^{-A} ln^B z^m functions):
+// The basis-function framework itself now lives in basis_functions.h, and
+// the standard workflow consumes the subjets that ppjets_root.cc already
+// clustered at ntuple-production time (branches "subjet_pt_R0pXX").  This
+// header is only the reclustering FALLBACK, used by unbias_weights.cc for
+// older constituent-only ntuples (--subjet-source recluster, or "auto"
+// when the stored branch is absent).
 //
-//   For each R=0.4 jet, recluster its constituents into R=0.1 subjets
-//   with the Cambridge/Aachen (C/A) algorithm, then form
-//
-//       g_n = Σ_{subjets} (pT_subjet)^n ,   n = 3, 4, ..., 10
-//
-//   i.e. one basis function per exponent (8 functions total).
-//
-// The C/A reclustering is implemented self-contained here (no FastJet
-// dependency) so both unbias_weights.cc and plot_unbias_weights.cc can
-// be built with root-config alone and stay bit-for-bit identical.
-//
-// Constituents are treated as massless (only pt/eta/phi are stored),
-// and merged with the E-scheme (4-momentum addition).
+// The C/A reclustering is implemented here without a FastJet dependency,
+// so the tools build with root-config alone.  Constituents are treated as
+// massless (only pt/eta/phi are stored) and merged with the E-scheme
+// (4-momentum addition).
 // =====================================================================
 #pragma once
 
@@ -24,39 +20,8 @@
 
 #include <cmath>
 #include <limits>
-#include <string>
 #include <vector>
 
-// ---- Subjet reclustering configuration ------------------------------
-static constexpr double kSubjetR = 0.1;   // C/A subjet radius
-static constexpr int    kBasisNMin = 3;   // lowest pT exponent
-static constexpr int    kBasisNMax = 10;  // highest pT exponent
-
-// =====================================================================
-// Basis function bookkeeping
-// =====================================================================
-// Each basis function is g_n = Σ_subjets pT^n.  We keep the same struct
-// name / accessor names the fit and plot code already used so that the
-// surrounding machinery (nphys = basis.size(), basis[j].label, ...) is
-// unchanged.
-struct BasisFuncDef {
-    int         n;      // pT exponent
-    std::string label;
-};
-
-static std::vector<BasisFuncDef> get_default_basis() {
-    std::vector<BasisFuncDef> basis;
-    for (int n = kBasisNMin; n <= kBasisNMax; ++n) {
-        basis.push_back({n, "g" + std::to_string(n) +
-                             ": sum pT_subjet^" + std::to_string(n) +
-                             " (C/A R=0.1)"});
-    }
-    return basis;
-}
-
-// =====================================================================
-// Self-contained Cambridge/Aachen reclustering
-// =====================================================================
 // A pseudojet carrying a 4-momentum for E-scheme recombination.
 struct SubjetPseudo {
     double px, py, pz, E;
@@ -137,32 +102,4 @@ static std::vector<double> recluster_ca_subjet_pts(
     pts.reserve(jets.size());
     for (const auto &j : jets) pts.push_back(pseudo_pt(j));
     return pts;
-}
-
-// =====================================================================
-// BASIS FUNCTION EVALUATION
-// =====================================================================
-/// Evaluate all basis functions g_n = Σ_subjets pT^n for one jet.
-/// R_subjet is the C/A reclustering radius (default kSubjetR = 0.1).
-static std::vector<double> evaluate_basis(
-        const std::vector<BasisFuncDef> &basis,
-        double ptjet,
-        const std::vector<double> &cpt,
-        const std::vector<double> &ceta,
-        const std::vector<double> &cphi,
-        double R_subjet = kSubjetR)
-{
-    const int nb = (int)basis.size();
-    std::vector<double> g(nb, 0.0);
-    if (ptjet <= 0.0) return g;
-
-    const std::vector<double> sjpt =
-        recluster_ca_subjet_pts(cpt, ceta, cphi, R_subjet);
-
-    for (const double pt : sjpt) {
-        if (pt <= 0.0) continue;
-        for (int j = 0; j < nb; ++j)
-            g[j] += std::pow(pt, (double)basis[j].n);
-    }
-    return g;
 }

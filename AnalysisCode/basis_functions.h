@@ -2,23 +2,20 @@
 // =====================================================================
 // Configurable basis-function framework for the selection-unbiasing fit.
 //
-// This header replaces the fixed, single-family basis that used to live
-// in `subjet_basis.h` (C/A R=0.1 subjet pT power sums, reconstructed by
-// reclustering the jet constituents on the fly).  The analysis chain has
-// since been updated so that the subjets are *already clustered* during
-// ROOT-file production (`PYTHIA/ppjets_root.cc`) and stored per radius in
-// the branches
+// Subjets are clustered during ROOT-file production (PYTHIA/ppjets_root.cc)
+// and stored per radius in the branches
 //
 //     subjet_pt_R0pXX , subjet_eta_R0pXX , subjet_phi_R0pXX
 //
-// with 0pXX == 0.XX (R = 0.01 ... 0.20 in steps of 0.01).  The fit should
-// therefore *consume the stored subjets directly* rather than recluster.
+// with 0pXX == 0.XX (R = 0.01 ... 0.20 in steps of 0.01), so the fit
+// consumes the stored subjets directly.  (subjet_basis.h provides an
+// on-the-fly reclustering fallback for older constituent-only ntuples.)
 //
 // The framework supports an arbitrary basis built from any combination of
 //
 //   (1) Energy-correlator (EEC) basis functions
 //         g = Sum_{i<k, dR<E}  dR^{-A} [ln dR]^B  z^m ,   z = pt_i pt_k / norm^2
-//       (the historical basis from the older unbias_weights.cc), and
+//       and
 //
 //   (2) Subjet-pT moment basis functions
 //         g = Sum_{subjets at radius R}  pT_subjet^n
@@ -35,8 +32,7 @@
 //   * `JetData`        -- a per-jet input bundle (constituents + a lazily
 //                         built pair table + the stored subjet lists keyed by
 //                         radius).  Basis functions read from it; they never
-//                         touch ROOT, so this header is pure C++ and unit
-//                         testable (define BASIS_NO_ROOT to drop the ROOT dep).
+//                         touch ROOT.
 //   * `BasisConfig` / `build_basis()` -- one clearly-marked place to declare
 //                         the desired basis.  Adding a term is a one-line edit;
 //                         adding a whole new *family* is a new BasisFunction
@@ -58,23 +54,12 @@
 #include <vector>
 
 // ---------------------------------------------------------------------
-// phi wrapping: use ROOT's TVector2 by default, but allow a ROOT-free
-// build (for unit tests) via -DBASIS_NO_ROOT.
+// phi wrapping (ROOT's TVector2).
 // ---------------------------------------------------------------------
-#ifdef BASIS_NO_ROOT
-namespace basis_detail {
-inline double phi_mpi_pi(double dphi) {
-    while (dphi >   M_PI) dphi -= 2.0 * M_PI;
-    while (dphi <= -M_PI) dphi += 2.0 * M_PI;
-    return dphi;
-}
-}  // namespace basis_detail
-#else
 #include <TVector2.h>
 namespace basis_detail {
 inline double phi_mpi_pi(double dphi) { return TVector2::Phi_mpi_pi(dphi); }
 }  // namespace basis_detail
-#endif
 
 // =====================================================================
 // Per-jet input bundle
@@ -109,13 +94,6 @@ struct JetData {
     const std::vector<double>* subjets_at(double R) const {
         auto it = subjet_pt.find(radius_tag(R));
         return (it == subjet_pt.end()) ? nullptr : it->second;
-    }
-
-    void reset() {
-        pt = 0.0;
-        const_pt = const_eta = const_phi = nullptr;
-        pairs.clear();
-        subjet_pt.clear();
     }
 };
 
@@ -224,7 +202,7 @@ private:
 class SubjetMomentBasisFunction : public BasisFunction {
 public:
     SubjetMomentBasisFunction(double R, double n, std::string label)
-        : R_(R), n_(n), rtag_(JetData::radius_tag(R)), label_(std::move(label)) {}
+        : n_(n), rtag_(JetData::radius_tag(R)), label_(std::move(label)) {}
 
     void collect_radii(std::set<int>& rtags) const override { rtags.insert(rtag_); }
 
@@ -239,21 +217,16 @@ public:
 
     std::string label() const override { return label_; }
 
-    double  radius() const { return R_; }
-    int     radius_tag() const { return rtag_; }
-    double  power() const { return n_; }
-
 private:
-    double      R_;      // subjet radius (selects the stored branch)
     double      n_;      // pT power (double -> allows fractional Mellin moments)
-    int         rtag_;   // round(R*100)
+    int         rtag_;   // round(R*100), selects the stored subjet branch
     std::string label_;
 };
 
 // =====================================================================
 // Basis configuration + builder
 // =====================================================================
-// One EEC term.  (A, B, m, E) match the historical BasisFuncDef fields.
+// One EEC term: g = Sum_{pairs} dR^{-A} [ln dR]^B z^m, keeping dR < E.
 struct EECTermSpec {
     double      A;
     double      B;
@@ -283,8 +256,7 @@ inline std::string make_subjet_moment_label(double R, double n) {
     return std::string(buf);
 }
 
-// -------- the historical EEC basis (ported verbatim from the old
-//          unbias_weights.cc get_default_basis) --------------------
+// -------- the standard EEC term set (A x B x m grid) ------------------
 inline std::vector<EECTermSpec> default_eec_terms() {
     return {
         { -1.0, 4.0, 1, 0.1, "" }, 
@@ -313,12 +285,11 @@ inline std::vector<EECTermSpec> default_eec_terms() {
 // =====================================================================
 //  >>> EDIT HERE to change the basis <<<
 // ---------------------------------------------------------------------
-// The default reproduces the current analysis basis (C/A R=0.1 subjet pT
-// power sums, n = 3..10) but now sourced from the STORED subjets rather
-// than on-the-fly reclustering.  Turn on `use_eec` to add the historical
-// energy-correlator functions, add more {R, powers} groups for extra
-// subjet radii, etc.  unbias_weights.cc can also override these fields
-// from the command line.
+// The default is the current analysis basis: C/A R=0.1 subjet pT power
+// sums, n = 3..10, sourced from the stored subjets.  Turn on `use_eec` to
+// add the energy-correlator functions, add more {R, powers} groups for
+// extra subjet radii, etc.  unbias_weights.cc can also override these
+// fields from the command line.
 // =====================================================================
 struct BasisConfig {
     // ---- Energy-correlator family ----

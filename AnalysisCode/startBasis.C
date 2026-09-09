@@ -3,16 +3,6 @@
 // December 19th, 2025
 
 #include <TFile.h>
-#include <TTree.h>
-#include <TH1D.h>
-#include <TCanvas.h>
-#include <TLegend.h>
-#include <TStyle.h>
-#include <iostream>
-
-
-
-#include <TFile.h>
 #include <TChain.h>
 #include <TTreeReader.h>
 #include <TTreeReaderValue.h>
@@ -22,6 +12,7 @@
 #include <TCanvas.h>
 #include <TLegend.h>
 #include <TStyle.h>
+#include <TString.h>
 
 #include <TSystemDirectory.h>
 #include <TSystemFile.h>
@@ -32,8 +23,6 @@
 #include <iostream>
 #include <random>
 #include <memory>
-
-#include <TString.h>
 
 using namespace std;
 
@@ -76,15 +65,13 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
                 const char* outFile  = "startBasis_output.root",
                 double pTLow = 100,
                 double pTHigh = 140,
-                double p = 8.0,          
-                double d = 0.1,          
+                double p = 8.0,
+                double d = 0.1,
                 unsigned rngSeed = 12345) {
 
   // config
   const char* treeName = "tgenBefore";
 
-  
-  // get the files and 
   std::vector<string> files;
   GetFiles(inputDir, files);
 
@@ -240,16 +227,10 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
                            ? (*sj)[j] : std::vector<double>();
       }
 
-      if((pTLow < ptRaw) && (ptRaw < pTHigh)){
-        hPtX->Fill(ptRaw, *weight);
-        
-        // Calculate bias weight using your formula
-        double ptL_p = std::pow(pTLow, p);
-        double ptH_p = std::pow(pTHigh, p);
-        double ptRaw_p = std::pow(ptRaw, p);
-        
-        double biasWeight = (ptL_p - ptH_p * d + (-1.0 + d) * ptRaw_p) / (ptL_p - ptH_p);
-        
+      // Every jet in the pT window enters both as an X jet (source 0) and as
+      // a Y jet (source 1): X is downsampled into the biased sample by the
+      // bias weight, while Y is cached and later oversampled into Y'.
+      if ((pTLow < ptRaw) && (ptRaw < pTHigh)) {
         out_pt = ptRaw;
         out_pt_raw = ptRaw;
         out_pt_shifted = ptRaw;
@@ -257,58 +238,47 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
         out_phi = phi[j];
         out_mass = mass[j];
         out_weight = *weight;
-        out_source = 0;
         out_const_pt = (*const_pt)[j];
         out_const_eta = (*const_eta)[j];
         out_const_phi = (*const_phi)[j];
+
+        // ---- X jet ----
+        hPtX->Fill(ptRaw, *weight);
+        out_source = 0;
         tX->Fill();
         tRef->Fill();
-        
-        // Downsample X with probability = biasWeight
-        if (uni01(rng) < biasWeight) {
-            tBiased->Fill();
-        }
         tPP->Fill();
-      }
-      
 
-      if((pTLow < ptRaw) && (ptRaw < pTHigh)){
-          hPtY->Fill(ptRaw, *weight);
-          out_pt = ptRaw;
-          out_pt_raw = ptRaw;
-          out_pt_shifted = ptRaw;
-          out_eta = eta[j];
-          out_phi = phi[j];
-          out_mass = mass[j];
-          out_weight = *weight;
-          out_source = 1;
-          out_const_pt = (*const_pt)[j];
-          out_const_eta = (*const_eta)[j];
-          out_const_phi = (*const_phi)[j];
-          tY->Fill();
-          tRef->Fill();
-          tPP->Fill();
+        // Downsample X with probability = biasWeight
+        const double ptL_p   = std::pow(pTLow, p);
+        const double ptH_p   = std::pow(pTHigh, p);
+        const double ptRaw_p = std::pow(ptRaw, p);
+        const double biasWeight =
+            (ptL_p - ptH_p * d + (-1.0 + d) * ptRaw_p) / (ptL_p - ptH_p);
+        if (uni01(rng) < biasWeight) tBiased->Fill();
 
-          JetRec rec;
-          rec.pt = out_pt;
-          rec.pt_raw = out_pt_raw;
-          rec.pt_shifted = out_pt_shifted;
-          rec.eta = out_eta;
-          rec.phi = out_phi;
-          rec.mass = out_mass;
-          rec.weight = out_weight;
-          rec.const_pt = out_const_pt;
-          rec.const_eta = out_const_eta;
-          rec.const_phi = out_const_phi;
-          rec.subjet_pt = out_subjet_pt;   // copy all forwarded radii
-          y_cache.push_back(std::move(rec));
+        // ---- Y jet ----
+        hPtY->Fill(ptRaw, *weight);
+        out_source = 1;
+        tY->Fill();
+        tRef->Fill();
+        tPP->Fill();
+
+        JetRec rec;
+        rec.pt = out_pt;
+        rec.pt_raw = out_pt_raw;
+        rec.pt_shifted = out_pt_shifted;
+        rec.eta = out_eta;
+        rec.phi = out_phi;
+        rec.mass = out_mass;
+        rec.weight = out_weight;
+        rec.const_pt = out_const_pt;
+        rec.const_eta = out_const_eta;
+        rec.const_phi = out_const_phi;
+        rec.subjet_pt = out_subjet_pt;   // copy all forwarded radii
+        y_cache.push_back(std::move(rec));
       }
     }
-    
-    // now create the pp and the AA samples by combining X and Y
-    // for now, let's just create the pp sample (unbiased)
-
-  
   }
 
   // Build Y' by oversampling Y (bias) while preserving total biased sample size.
@@ -376,9 +346,6 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   hRef->SetLineWidth(3);
   hBiased->SetLineWidth(3);
 
-
-
-
   // -----------------------------
   // Plot
   // -----------------------------
@@ -387,24 +354,19 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
 
   TCanvas* c = new TCanvas("c", "Jet pT shift", 600, 600);
   c->SetLogy();
-  c->SetTopMargin(0.05); 
-  c->SetLeftMargin(0.13); 
-  c->SetRightMargin(0.05); 
-  c->SetTickx(1); 
-  c->SetTicky(1); 
+  c->SetTopMargin(0.05);
+  c->SetLeftMargin(0.13);
+  c->SetRightMargin(0.05);
+  c->SetTickx(1);
+  c->SetTicky(1);
 
   hRef->Draw("hist");
   hBiased->Draw("hist same");
-  // hPtX->Draw("hist same");
-  // hPtY->Draw("hist same");
   hpTpp->Draw("hist same");
 
   TLegend* leg = new TLegend(0.50, 0.78, 0.88, 0.88);
   leg->AddEntry(hRef, "Unbiased (X #cup Y)", "l");
   leg->AddEntry(hBiased, "Biased (X down + Y')", "l");
-  // leg->AddEntry(hPtX, "Window X", "l");
-  // leg->AddEntry(hPtY, "Window Y", "l");
-  // leg->AddEntry(hpTpp, "X + Y (hist)", "l");
   leg->SetBorderSize(0);
   leg->Draw();
 
@@ -426,11 +388,9 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   if (!y_cache.empty()) {
     const double y = static_cast<double>(y_cache.size());
     const double yprime = static_cast<double>(tYp->GetEntries());
-    const double wX = yprime / (yprime + y);
-    const double wYp = y / (yprime + y);
     TTree tW("tWeights", "analytic class weights");
-    double wX_out = wX;
-    double wYp_out = wYp;
+    double wX_out  = yprime / (yprime + y);
+    double wYp_out = y / (yprime + y);
     tW.Branch("wX", &wX_out, "wX/D");
     tW.Branch("wYprime", &wYp_out, "wYprime/D");
     tW.Fill();
