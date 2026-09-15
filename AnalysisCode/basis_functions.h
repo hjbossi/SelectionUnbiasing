@@ -18,9 +18,21 @@
 //       and
 //
 //   (2) Subjet-pT moment basis functions
-//         g = Sum_{subjets at radius R}  pT_subjet^n
+//         g = Sum_{subjets at radius R}  (pT_subjet / norm)^n
 //       i.e. Mellin moments of the subjet pT spectrum at a chosen subjet
 //       radius R.  The user picks one or more radii and one or more powers.
+//
+// SHARED NORMALIZATION ("bin center")
+// ------------------------------------
+// Both families divide by a common momentum scale ("norm" / bin center,
+// historically hard-coded as 120.0) before raising to a power. That value
+// is now a single number, written once by startBasis.C (where the pT bin
+// itself is defined) into a small TEnv resource file, and read here via
+// `read_bin_center()`. Every downstream tool (unbias_weights.cc,
+// plot_unbias_weights.cc) reads the same file instead of hard-coding the
+// number, so changing the bin center in one place changes it everywhere.
+// See BasisConfig::eec_norm / BasisConfig::subjet_norm below for how the
+// value flows into the basis functions themselves.
 //
 // DESIGN
 // ------
@@ -60,6 +72,23 @@
 namespace basis_detail {
 inline double phi_mpi_pi(double dphi) { return TVector2::Phi_mpi_pi(dphi); }
 }  // namespace basis_detail
+
+// =====================================================================
+// Shared analysis configuration (TEnv resource file)
+// =====================================================================
+// startBasis.C is where the pT bin (and therefore the natural momentum
+// scale / "bin center" used to normalize the basis functions) is defined.
+// It writes that number to a small TEnv resource file (default name
+// "unbiasing_config.env") with key "Unbiasing.BinCenter". Every other tool
+// in the chain reads it back with this helper instead of hard-coding the
+// value, so there is exactly one place that ever sets it.
+#include <TEnv.h>
+
+inline double read_bin_center(const std::string& config_file,
+                              double fallback = 120.0) {
+    TEnv env(config_file.c_str());
+    return env.GetValue("Unbiasing.BinCenter", fallback);
+}
 
 // =====================================================================
 // Per-jet input bundle
@@ -196,13 +225,13 @@ private:
 
 // =====================================================================
 // (2) Subjet-pT moment basis function
-//     g = Sum_{subjets at radius R}  pT_subjet^n
+//     g = Sum_{subjets at radius R}  (pT_subjet / norm)^n
 //     (Mellin moment of the stored subjet-pT spectrum at radius R.)
 // =====================================================================
 class SubjetMomentBasisFunction : public BasisFunction {
 public:
-    SubjetMomentBasisFunction(double R, double n, std::string label)
-        : n_(n), rtag_(JetData::radius_tag(R)), label_(std::move(label)) {}
+    SubjetMomentBasisFunction(double R, double n, double norm, std::string label)
+        : n_(n), norm_(norm), rtag_(JetData::radius_tag(R)), label_(std::move(label)) {}
 
     void collect_radii(std::set<int>& rtags) const override { rtags.insert(rtag_); }
 
@@ -211,7 +240,7 @@ public:
         if (it == jet.subjet_pt.end() || it->second == nullptr) return 0.0;
         double g = 0.0;
         for (const double pt : *it->second)
-            if (pt > 0.0) g += std::pow(pt/120.0, n_);
+            if (pt > 0.0) g += std::pow(pt / norm_, n_);
         return g;
     }
 
@@ -219,6 +248,7 @@ public:
 
 private:
     double      n_;      // pT power (double -> allows fractional Mellin moments)
+    double      norm_;   // momentum-scale normalization ("bin center")
     int         rtag_;   // round(R*100), selects the stored subjet branch
     std::string label_;
 };
@@ -249,10 +279,10 @@ inline std::string make_eec_label(const EECTermSpec& t) {
     return std::string(buf);
 }
 
-inline std::string make_subjet_moment_label(double R, double n) {
-    char buf[128];
+inline std::string make_subjet_moment_label(double R, double n, double norm) {
+    char buf[144];
     std::snprintf(buf, sizeof(buf),
-                  "sjmom: sum pT^{%.3g} (stored subjets R=%.2f)", n, R);
+                  "sjmom: sum (pT/%.4g)^{%.3g} (stored subjets R=%.2f)", norm, n, R);
     return std::string(buf);
 }
 
@@ -290,6 +320,14 @@ inline std::vector<EECTermSpec> default_eec_terms() {
 // add the energy-correlator functions, add more {R, powers} groups for
 // extra subjet radii, etc.  unbias_weights.cc can also override these
 // fields from the command line.
+//
+// `eec_norm` and `subjet_norm` are the momentum-scale normalizations for
+// the two families (historically both hard-coded to 120.0). The defaults
+// below are just a fallback for standalone use of this header; in the
+// normal analysis chain, unbias_weights.cc and plot_unbias_weights.cc
+// overwrite both with the single "bin center" value read from the TEnv
+// config file written by startBasis.C (see read_bin_center() above), so
+// edit the bin center there, not here.
 // =====================================================================
 struct BasisConfig {
     // ---- Energy-correlator family ----
@@ -299,6 +337,7 @@ struct BasisConfig {
     std::vector<EECTermSpec> eec_terms  = default_eec_terms();
 
     // ---- Subjet-pT moment family ----
+    double                        subjet_norm = 120.0;   // g = sum (pT/subjet_norm)^n
     // Any number of radii, each with its own list of powers.
     std::vector<SubjetMomentSpec> subjet_moments = {
         { 0.10, { 1,2,3, 4, 5, 6, 7, 8, 9, 10,11,12} },
@@ -323,7 +362,7 @@ inline Basis build_basis(const BasisConfig& cfg) {
     for (const SubjetMomentSpec& sm : cfg.subjet_moments) {
         for (const double n : sm.powers) {
             basis.push_back(std::make_unique<SubjetMomentBasisFunction>(
-                sm.R, n, make_subjet_moment_label(sm.R, n)));
+                sm.R, n, cfg.subjet_norm, make_subjet_moment_label(sm.R, n, cfg.subjet_norm)));
         }
     }
 
@@ -373,7 +412,7 @@ inline std::string basis_signature(const BasisConfig& cfg) {
                           i ? "," : "", sm.powers[i]);
             pw += pb;
         }
-        std::snprintf(buf, sizeof(buf), "sjmom_R%.2f[%s]+", sm.R, pw.c_str());
+        std::snprintf(buf, sizeof(buf), "sjmom_R%.2f[%s,norm=%.3g]+", sm.R, pw.c_str(), cfg.subjet_norm);
         s += buf;
     }
     if (!s.empty() && s.back() == '+') s.pop_back();

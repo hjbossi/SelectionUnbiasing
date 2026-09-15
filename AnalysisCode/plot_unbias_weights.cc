@@ -8,6 +8,14 @@
 //     --input unbias_weights.root \
 //     --out unbias_weights_plots.root \
 //     --pt-min 50 --pt-max 200 --nbins 60
+//
+// EEC normalization ("bin center"): the EEC diagnostic histograms below
+// normalize pt_i*pt_k by a momentum scale that must match whatever
+// unbias_weights.cc used when it fit the weights. That number is written
+// once by startBasis.C into a shared TEnv config file (default
+// "unbiasing_config.env", key "Unbiasing.BinCenter") and read back here via
+// basis_functions.h's read_bin_center() -- pass --config to point at a
+// different file, or --eec-norm to override the value outright.
 
 #include <TFile.h>
 #include <TTree.h>
@@ -18,6 +26,8 @@
 #include <TVector2.h>
 #include <TMath.h>
 #include <TLine.h>
+
+#include "basis_functions.h"   // read_bin_center() (shared TEnv config helper)
 
 #include <cmath>
 #include <cstdlib>
@@ -39,6 +49,12 @@ static std::string get_arg(int argc, char* argv[], const std::string &flag, cons
   return def;
 }
 
+static bool has_arg(int argc, char* argv[], const std::string &flag) {
+  for (int i = 1; i < argc; ++i)
+    if (std::string(argv[i]) == flag) return true;
+  return false;
+}
+
 // =====================================================================
 // BASIS VECTORS
 // =====================================================================
@@ -53,10 +69,10 @@ static std::string get_arg(int argc, char* argv[], const std::string &flag, cons
 static void fill_eec(TH1D *h, const std::vector<double> &cpt,
                      const std::vector<double> &ceta,
                      const std::vector<double> &cphi,
-                     double wjet) {
+                     double wjet, double eec_norm) {
   const size_t nconst = cpt.size();
   if (nconst < 2) return;
-  const double norm = 1.0 / (120.0 * 120.0);   // z = pt_i pt_k / 120^2
+  const double norm = 1.0 / (eec_norm * eec_norm);   // z = pt_i pt_k / eec_norm^2
   for (size_t i = 0; i < nconst; ++i) {
     if (cpt[i] <= 0.0) continue;
     for (size_t k = i + 1; k < nconst; ++k) {
@@ -80,6 +96,18 @@ int main(int argc, char* argv[]) {
   const int nbins = std::stoi(get_arg(argc, argv, "--nbins", "80"));
   const int eec_bins = std::stoi(get_arg(argc, argv, "--eec-bins", "60"));
   const double eec_max = std::stod(get_arg(argc, argv, "--eec-max", "0.4"));
+
+  // ---- Shared bin-center config (written by startBasis.C) ----
+  // Same TEnv file unbias_weights.cc reads, so the EEC z-normalization used
+  // for these diagnostic plots always matches what the fit itself used,
+  // unless explicitly overridden with --eec-norm.
+  const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
+  const double bin_center = read_bin_center(config_file, 120.0);
+  const double eec_norm = has_arg(argc, argv, "--eec-norm")
+                               ? std::stod(get_arg(argc, argv, "--eec-norm", "120.0"))
+                               : bin_center;
+  std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
+            << "  (EEC norm used here = " << eec_norm << ")" << std::endl;
 
   if (input.empty()) die("--input is required");
   if (target_input.empty()) die("--target-input is required to compare against unbiased target");
@@ -139,8 +167,8 @@ int main(int argc, char* argv[]) {
     h_w_unbias->Fill(w_unbias);
     if (pt >= pt_min && pt <= pt_max && has_const && const_pt && const_eta && const_phi) {
       if (const_pt->size() == const_eta->size() && const_pt->size() == const_phi->size()) {
-        fill_eec(h_eec_base, *const_pt, *const_eta, *const_phi, w_base);
-        fill_eec(h_eec_total, *const_pt, *const_eta, *const_phi, w_total);
+        fill_eec(h_eec_base, *const_pt, *const_eta, *const_phi, w_base, eec_norm);
+        fill_eec(h_eec_total, *const_pt, *const_eta, *const_phi, w_total, eec_norm);
         sumw_base += w_base;
         sumw_total += w_total;
       }
@@ -175,7 +203,7 @@ int main(int argc, char* argv[]) {
     h_target->Fill(tpt, tw);
     if (tpt >= pt_min && tpt <= pt_max && target_has_const && tconst_pt && tconst_eta && tconst_phi) {
       if (tconst_pt->size() == tconst_eta->size() && tconst_pt->size() == tconst_phi->size()) {
-        fill_eec(h_eec_target, *tconst_pt, *tconst_eta, *tconst_phi, tw);
+        fill_eec(h_eec_target, *tconst_pt, *tconst_eta, *tconst_phi, tw, eec_norm);
         sumw_target += tw;
       }
     }

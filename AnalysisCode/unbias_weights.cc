@@ -16,7 +16,7 @@
 //       and
 //
 //   (2) Subjet-pT moment basis functions
-//         g = Σ_{subjets at radius R} pT_subjet^n
+//         g = Σ_{subjets at radius R} (pT_subjet / norm)^n
 //       i.e. Mellin moments of the subjet-pT spectrum, for one or more
 //       subjet radii R and one or more powers n.
 //
@@ -24,6 +24,16 @@
 // self-contained header  basis_functions.h.  Adding a term is a one-line
 // edit (or a command-line flag); adding a whole new *family* is a new
 // BasisFunction subclass — the reader and optimiser below never change.
+//
+// Shared normalization ("bin center"):
+//   Both families normalize by a common momentum scale (historically
+//   hard-coded as 120.0 in three separate places). That number is now
+//   written once by startBasis.C -- where the pT bin itself is defined --
+//   into a small TEnv resource file (default "unbiasing_config.env",
+//   key "Unbiasing.BinCenter"), and read back here via
+//   basis_functions.h's read_bin_center(). --eec-norm / --subjet-norm
+//   still let you override either family individually on the command
+//   line; when omitted, both default to the shared bin-center value.
 //
 // Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
 // time over a radius scan R = 0.01..0.20 and stores them in branches
@@ -40,14 +50,18 @@
 // Workflow:
 //   (A) ppjets_root.cc  -> tgenBefore ntuple (constituents + subjet_pt_R0pXX)
 //   (B) startBasis.C    -> one file with the biased/reference trees, now
-//                          carrying the forwarded subjet_pt_R0pXX branches
+//                          carrying the forwarded subjet_pt_R0pXX branches,
+//                          and also writes the shared TEnv config file
+//                          (bin center + pT window) used below.
 //   (C) unbias_weights.cc reads that single file, e.g.
 //         ./unbias_weights --input startBasis_output.root --tree tBiased --target-tree tRef ...
 //       (--target-input defaults to --input, so one file suffices).
 //
 // Key flags (see full list in main):
+//   --config      <file>              shared TEnv config file (default "unbiasing_config.env")
 //   --basis-eec   {off,on}            enable the EEC family
-//   --eec-norm    <val>               z normalisation (default 120)
+//   --eec-norm    <val>               z normalisation (default: bin center from --config)
+//   --subjet-norm <val>               subjet-pT normalisation (default: bin center from --config)
 //   --subjet-radii  "0.1,0.05"        subjet radii for the moment family
 //   --subjet-powers "3,4,...,10"      powers n for the moment family
 //   --subjet-R    <R>                 single-radius shortcut (default 0.1)
@@ -61,7 +75,7 @@
 #include <TFile.h>
 #include <TTree.h>
 
-#include "basis_functions.h"   // configurable multi-family basis framework
+#include "basis_functions.h"   // configurable multi-family basis framework + read_bin_center()
 #include "subjet_basis.h"      // recluster_ca_subjet_pts (reclustering fallback)
 
 #include <algorithm>
@@ -431,6 +445,16 @@ int main(int argc, char *argv[]) {
     const std::string lr_spec      = get_arg(argc, argv, "--adam-lr",       "auto");
     const std::string subjet_source = get_arg(argc, argv, "--subjet-source", "precomputed");
 
+    // ---- Shared bin-center config (written by startBasis.C) ----
+    // This single TEnv file is the one place that defines the momentum scale
+    // ("bin center") used to normalize both basis families below. --eec-norm
+    // and --subjet-norm can still override either family individually; when
+    // not given on the command line, both default to this value.
+    const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
+    const double bin_center = read_bin_center(config_file, 120.0);
+    std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
+              << std::endl;
+
     // ---- Basis configuration flags (VERSION 6) ----
     const std::string basis_eec_s  = get_arg(argc, argv, "--basis-eec",     "on");
     const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",  "0.1,0.2");
@@ -440,7 +464,14 @@ int main(int argc, char *argv[]) {
     const double pt_max  = std::stod(get_arg(argc, argv, "--pt-max", "1e9"));
     const double dR_min  = std::stod(get_arg(argc, argv, "--dR-min", "0.001"));
     const double subjet_R = std::stod(get_arg(argc, argv, "--subjet-R", "0.1"));
-    const double eec_norm = std::stod(get_arg(argc, argv, "--eec-norm", "120.0"));
+    // --eec-norm / --subjet-norm default to the shared bin-center value read
+    // above; pass either flag explicitly to override just that one family.
+    const double eec_norm    = has_arg(argc, argv, "--eec-norm")
+                                    ? std::stod(get_arg(argc, argv, "--eec-norm", "120.0"))
+                                    : bin_center;
+    const double subjet_norm = has_arg(argc, argv, "--subjet-norm")
+                                    ? std::stod(get_arg(argc, argv, "--subjet-norm", "120.0"))
+                                    : bin_center;
 
     const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "20"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
@@ -471,9 +502,10 @@ int main(int argc, char *argv[]) {
     // the CLI-override block marked >>> below.
     // =================================================================
     BasisConfig cfg;
-    cfg.use_eec    = (basis_eec_s == "on" || basis_eec_s == "1" || basis_eec_s == "true");
-    cfg.eec_norm   = eec_norm;
-    cfg.eec_dR_min = dR_min;
+    cfg.use_eec     = (basis_eec_s == "on" || basis_eec_s == "1" || basis_eec_s == "true");
+    cfg.eec_norm    = eec_norm;
+    cfg.subjet_norm = subjet_norm;
+    cfg.eec_dR_min  = dR_min;
 
     // >>> CLI override of the subjet-moment family (radii × powers) <<<
     // Only rebuild the subjet-moment list from the command line when the user
@@ -515,6 +547,8 @@ int main(int argc, char *argv[]) {
     std::cout << "  signature = " << basis_signature(cfg) << std::endl;
     std::cout << "  EEC family: " << (cfg.use_eec ? "on" : "off")
               << " (norm=" << cfg.eec_norm << ", dR_min=" << cfg.eec_dR_min << ")" << std::endl;
+    std::cout << "  subjet-moment norm = " << cfg.subjet_norm
+              << "  (bin_center=" << bin_center << ")" << std::endl;
     std::cout << "  --subjet-source = " << subjet_source << std::endl << std::endl;
 
     // ---- Read TARGET sample ----
@@ -862,6 +896,7 @@ int main(int argc, char *argv[]) {
     auto la = lam; la.push_back(lam_norm);
     std::string bl = basis_signature(cfg) + "+norm_analytic";
     std::string subjet_src_label = subjet_source;
+    std::string config_file_label = config_file;
     // Per-function labels, so the plotter can title the basis-vector plots.
     std::vector<std::string> basis_labels;
     for (int j = 0; j < nphys; ++j) basis_labels.push_back(basis[j]->label());
@@ -874,6 +909,12 @@ int main(int argc, char *argv[]) {
     tm.Branch("best_loss",const_cast<double*>(&best_loss),"best_loss/D");
     double sr_out = primary_R;
     tm.Branch("subjet_R",&sr_out,"subjet_R/D");
+    // Provenance: the shared bin-center value (and the config file it came
+    // from) actually used for this fit, so downstream plotting/analysis can
+    // confirm it matches what startBasis.C wrote.
+    double bin_center_out = bin_center;
+    tm.Branch("bin_center",&bin_center_out,"bin_center/D");
+    tm.Branch("config_file",&config_file_label);
     tm.Fill();
 
     // Companion tree: per-jet TARGET basis values + weight, so the plotter can

@@ -13,6 +13,7 @@
 #include <TLegend.h>
 #include <TStyle.h>
 #include <TString.h>
+#include <TEnv.h>
 
 #include <TSystemDirectory.h>
 #include <TSystemFile.h>
@@ -67,10 +68,38 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
                 double pTHigh = 140,
                 double p = 8.0,
                 double d = 0.1,
-                unsigned rngSeed = 12345) {
+                unsigned rngSeed = 12345,
+                // Shared analysis configuration, written out below so the
+                // rest of the chain (unbias_weights.cc, plot_unbias_weights.cc)
+                // never has to hard-code these numbers. binCenter <= 0 means
+                // "derive it from the pT window" (the midpoint); pass a
+                // positive value to set it explicitly instead.
+                double binCenter = -1.0,
+                const char* configFile = "unbiasing_config.env") {
 
   // config
   const char* treeName = "tgenBefore";
+
+  // -----------------------------
+  // Shared analysis configuration
+  // -----------------------------
+  // This is the single place the pT bin (and hence the natural momentum
+  // scale used to normalize the basis functions downstream) is defined.
+  // Write it once, here, into a small TEnv resource file that every other
+  // tool in the chain reads back (see read_bin_center() in
+  // basis_functions.h) instead of hard-coding the number (previously
+  // 120.0, duplicated in three separate places).
+  const double binCenterUsed = (binCenter > 0.0) ? binCenter : 0.5 * (pTLow + pTHigh);
+  {
+    TEnv config(configFile);
+    config.SetValue("Unbiasing.BinCenter", binCenterUsed);
+    config.SetValue("Unbiasing.PtLow", pTLow);
+    config.SetValue("Unbiasing.PtHigh", pTHigh);
+    config.SaveLevel(kEnvLocal);
+    std::cout << "Wrote shared analysis config to '" << configFile << "'"
+              << "  (BinCenter=" << binCenterUsed
+              << ", PtLow=" << pTLow << ", PtHigh=" << pTHigh << ")" << std::endl;
+  }
 
   std::vector<string> files;
   GetFiles(inputDir, files);
