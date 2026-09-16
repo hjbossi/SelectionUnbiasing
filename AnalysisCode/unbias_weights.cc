@@ -26,14 +26,16 @@
 // BasisFunction subclass — the reader and optimiser below never change.
 //
 // Shared normalization ("bin center"):
-//   Both families normalize by a common momentum scale (historically
-//   hard-coded as 120.0 in three separate places). That number is now
-//   written once by startBasis.C -- where the pT bin itself is defined --
-//   into a small TEnv resource file (default "unbiasing_config.env",
-//   key "Unbiasing.BinCenter"), and read back here via
-//   basis_functions.h's read_bin_center(). --eec-norm / --subjet-norm
-//   still let you override either family individually on the command
-//   line; when omitted, both default to the shared bin-center value.
+//   Both families normalize by a common momentum scale. There is no
+//   hard-coded numeric value for it anywhere in this analysis chain --
+//   not even as a fallback. It is written exactly once by startBasis.C
+//   (where the pT bin itself is defined) into a small TEnv resource file
+//   (default "unbiasing_config.env", key "Unbiasing.BinCenter"), and read
+//   back here via basis_functions.h's read_bin_center(). If that file or
+//   key is missing, read_bin_center() aborts with an error instead of
+//   guessing a number. --eec-norm / --subjet-norm still let you override
+//   either family individually on the command line; when omitted, both
+//   default to the shared bin-center value read from --config.
 //
 // Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
 // time over a radius scan R = 0.01..0.20 and stores them in branches
@@ -449,9 +451,13 @@ int main(int argc, char *argv[]) {
     // This single TEnv file is the one place that defines the momentum scale
     // ("bin center") used to normalize both basis families below. --eec-norm
     // and --subjet-norm can still override either family individually; when
-    // not given on the command line, both default to this value.
+    // not given on the command line, both default to this value. There is no
+    // hard-coded fallback: if the config file (or its "Unbiasing.BinCenter"
+    // key) is missing, read_bin_center() aborts with an error rather than
+    // guessing a number -- run startBasis.C first, or point --config at a
+    // valid file.
     const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
-    const double bin_center = read_bin_center(config_file, 120.0);
+    const double bin_center = read_bin_center(config_file);
     std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
               << std::endl;
 
@@ -466,11 +472,14 @@ int main(int argc, char *argv[]) {
     const double subjet_R = std::stod(get_arg(argc, argv, "--subjet-R", "0.1"));
     // --eec-norm / --subjet-norm default to the shared bin-center value read
     // above; pass either flag explicitly to override just that one family.
+    // get_arg's own default value is never actually used here -- has_arg()
+    // already guarantees the flag is present before get_arg() is called for
+    // it -- so there is no literal number hiding in this default either.
     const double eec_norm    = has_arg(argc, argv, "--eec-norm")
-                                    ? std::stod(get_arg(argc, argv, "--eec-norm", "120.0"))
+                                    ? std::stod(get_arg(argc, argv, "--eec-norm"))
                                     : bin_center;
     const double subjet_norm = has_arg(argc, argv, "--subjet-norm")
-                                    ? std::stod(get_arg(argc, argv, "--subjet-norm", "120.0"))
+                                    ? std::stod(get_arg(argc, argv, "--subjet-norm"))
                                     : bin_center;
 
     const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "20"));

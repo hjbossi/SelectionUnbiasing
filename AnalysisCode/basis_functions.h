@@ -25,14 +25,20 @@
 // SHARED NORMALIZATION ("bin center")
 // ------------------------------------
 // Both families divide by a common momentum scale ("norm" / bin center,
-// historically hard-coded as 120.0) before raising to a power. That value
-// is now a single number, written once by startBasis.C (where the pT bin
-// itself is defined) into a small TEnv resource file, and read here via
-// `read_bin_center()`. Every downstream tool (unbias_weights.cc,
-// plot_unbias_weights.cc) reads the same file instead of hard-coding the
-// number, so changing the bin center in one place changes it everywhere.
-// See BasisConfig::eec_norm / BasisConfig::subjet_norm below for how the
-// value flows into the basis functions themselves.
+// historically hard-coded as 120.0 in three separate, independently
+// editable places, and later as a single fallback constant that could
+// still silently paper over a missing config file). There is now NO
+// hard-coded numeric bin center anywhere in this codebase, not even as a
+// fallback: the value is written exactly once by startBasis.C (where the
+// pT bin itself is defined) into a small TEnv resource file (default name
+// "unbiasing_config.env", key "Unbiasing.BinCenter"), and every downstream
+// tool (unbias_weights.cc, plot_unbias_weights.cc, and this header) reads
+// it back via `read_bin_center()`. If that config file or key is missing,
+// `read_bin_center()` does not guess a number -- it prints an error and
+// exits, so a stale/never-run config can never silently produce a wrong
+// (or merely different) analysis. Changing the bin center means changing
+// the one line in startBasis.C (or its `binCenter` argument) that writes
+// it to the config file; nothing else needs to change.
 //
 // DESIGN
 // ------
@@ -59,6 +65,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <set>
@@ -74,7 +81,10 @@ inline double phi_mpi_pi(double dphi) { return TVector2::Phi_mpi_pi(dphi); }
 }  // namespace basis_detail
 
 // =====================================================================
-// Shared analysis configuration (TEnv resource file)
+// Shared analysis configuration (TEnv resource file) -- the ONLY source
+// of the bin center. There is no hard-coded numeric fallback anywhere in
+// this codebase: if the config file or key is missing, this aborts with a
+// clear error rather than silently using some made-up number.
 // =====================================================================
 // startBasis.C is where the pT bin (and therefore the natural momentum
 // scale / "bin center" used to normalize the basis functions) is defined.
@@ -84,10 +94,25 @@ inline double phi_mpi_pi(double dphi) { return TVector2::Phi_mpi_pi(dphi); }
 // value, so there is exactly one place that ever sets it.
 #include <TEnv.h>
 
-inline double read_bin_center(const std::string& config_file,
-                              double fallback = 120.0) {
+// Read the shared bin center from `config_file`. There is intentionally no
+// default/fallback parameter: if the file does not exist, or exists but
+// lacks the "Unbiasing.BinCenter" key, this prints an error and exits
+// rather than returning a guessed value. Run startBasis.C first (it writes
+// this file), or pass --config pointing at a valid one.
+inline double read_bin_center(const std::string& config_file) {
     TEnv env(config_file.c_str());
-    return env.GetValue("Unbiasing.BinCenter", fallback);
+    TEnvRec* rec = env.Lookup("Unbiasing.BinCenter");
+    if (!rec) {
+        std::fprintf(stderr,
+            "ERROR: bin center not found -- config file '%s' does not exist "
+            "or has no 'Unbiasing.BinCenter' key.\n"
+            "Run startBasis.C first (it writes this file from the pT window "
+            "you give it), or pass --config pointing at a valid "
+            "unbiasing_config.env. There is no hard-coded fallback value.\n",
+            config_file.c_str());
+        std::exit(1);
+    }
+    return env.GetValue("Unbiasing.BinCenter", 0.0);  // key existence already checked above
 }
 
 // =====================================================================
@@ -322,22 +347,23 @@ inline std::vector<EECTermSpec> default_eec_terms() {
 // fields from the command line.
 //
 // `eec_norm` and `subjet_norm` are the momentum-scale normalizations for
-// the two families (historically both hard-coded to 120.0). The defaults
-// below are just a fallback for standalone use of this header; in the
-// normal analysis chain, unbias_weights.cc and plot_unbias_weights.cc
-// overwrite both with the single "bin center" value read from the TEnv
-// config file written by startBasis.C (see read_bin_center() above), so
-// edit the bin center there, not here.
+// the two families. They default to 0.0 -- an intentionally invalid
+// sentinel -- because there is no hard-coded bin-center value anywhere in
+// this codebase. Every caller (unbias_weights.cc, plot_unbias_weights.cc)
+// MUST set them from `read_bin_center(config_file)` (the single TEnv file
+// written by startBasis.C) before calling build_basis(); build_basis()
+// checks this and aborts with a clear error if a norm was left unset, so a
+// caller can never silently fall back to some made-up number.
 // =====================================================================
 struct BasisConfig {
     // ---- Energy-correlator family ----
-    bool                     use_eec    = true;         // off -> subjet-only default
-    double                   eec_norm   = 120.0;         // z = pt_i pt_k / eec_norm^2
-    double                   eec_dR_min = 0.001;         // small-angle screen (shared)
+    bool                     use_eec    = true;                    // off -> subjet-only default
+    double                   eec_norm   = 0.0;                     // MUST be set from unbiasing_config.env; z = pt_i pt_k / eec_norm^2
+    double                   eec_dR_min = 0.001;                   // small-angle screen (shared)
     std::vector<EECTermSpec> eec_terms  = default_eec_terms();
 
     // ---- Subjet-pT moment family ----
-    double                        subjet_norm = 120.0;   // g = sum (pT/subjet_norm)^n
+    double                        subjet_norm = 0.0;  // MUST be set from unbiasing_config.env; g = sum (pT/subjet_norm)^n
     // Any number of radii, each with its own list of powers.
     std::vector<SubjetMomentSpec> subjet_moments = {
         { 0.10, { 1,2,3, 4, 5, 6, 7, 8, 9, 10,11,12} },
@@ -347,8 +373,28 @@ struct BasisConfig {
 };
 
 // Assemble the basis from a configuration.  Order: EEC terms first (if
-// enabled), then subjet moments grouped by radius.
+// enabled), then subjet moments grouped by radius. Aborts if a family that
+// is actually in use has never had its norm set from the shared config
+// file (see BasisConfig comment above) -- this is what makes "no hard-coded
+// bin center anywhere" an enforced invariant rather than just a convention.
 inline Basis build_basis(const BasisConfig& cfg) {
+    if (cfg.use_eec && !(cfg.eec_norm > 0.0)) {
+        std::fprintf(stderr,
+            "ERROR: BasisConfig::eec_norm is %.6g -- it was never set from "
+            "unbiasing_config.env. Call read_bin_center(config_file) and "
+            "assign the result to cfg.eec_norm before build_basis(). There "
+            "is no hard-coded fallback.\n", cfg.eec_norm);
+        std::exit(1);
+    }
+    if (!cfg.subjet_moments.empty() && !(cfg.subjet_norm > 0.0)) {
+        std::fprintf(stderr,
+            "ERROR: BasisConfig::subjet_norm is %.6g -- it was never set "
+            "from unbiasing_config.env. Call read_bin_center(config_file) "
+            "and assign the result to cfg.subjet_norm before build_basis(). "
+            "There is no hard-coded fallback.\n", cfg.subjet_norm);
+        std::exit(1);
+    }
+
     Basis basis;
 
     if (cfg.use_eec) {

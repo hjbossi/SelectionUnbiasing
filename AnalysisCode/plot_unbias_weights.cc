@@ -59,11 +59,14 @@
 //
 // EEC normalization ("bin center"): the EEC diagnostic histograms below
 // normalize pt_i*pt_k by a momentum scale that must match whatever
-// unbias_weights.cc used when it fit the weights. That number is written
-// once by startBasis.C into a shared TEnv config file (default
+// unbias_weights.cc used when it fit the weights. There is no hard-coded
+// numeric value for it anywhere in this codebase: it is written once by
+// startBasis.C into a shared TEnv config file (default
 // "unbiasing_config.env", key "Unbiasing.BinCenter") and read back here via
 // basis_functions.h's read_bin_center() -- pass --config to point at a
-// different file, or --eec-norm to override the value outright.
+// different file, or --eec-norm to override the value outright. If the
+// config file/key is missing, read_bin_center() aborts with an error
+// instead of guessing a number.
 
 #include <TFile.h>
 #include <TTree.h>
@@ -341,11 +344,16 @@ int main(int argc, char* argv[]) {
   // ---- Shared bin-center config (written by startBasis.C) ----
   // Same TEnv file unbias_weights.cc reads, so the EEC z-normalization used
   // for these diagnostic plots always matches what the fit itself used,
-  // unless explicitly overridden with --eec-norm.
+  // unless explicitly overridden with --eec-norm. There is no hard-coded
+  // fallback: if the config file/key is missing, read_bin_center() aborts
+  // with an error instead of guessing a number.
   const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
-  const double bin_center = read_bin_center(config_file, 120.0);
+  const double bin_center = read_bin_center(config_file);
+  // get_arg's own default value is never actually used here -- has_arg()
+  // already guarantees --eec-norm is present before get_arg() is called
+  // with it -- so there is no literal number hiding in this default either.
   const double eec_norm = has_arg(argc, argv, "--eec-norm")
-                               ? std::stod(get_arg(argc, argv, "--eec-norm", "120.0"))
+                               ? std::stod(get_arg(argc, argv, "--eec-norm"))
                                : bin_center;
   std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
             << "  (EEC norm used here = " << eec_norm << ")" << std::endl;
