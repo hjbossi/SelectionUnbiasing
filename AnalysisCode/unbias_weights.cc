@@ -5,7 +5,10 @@
 // Andres, Bossi, Holguin (arXiv:2501.17219).
 //
 // Builds:
-//   c++ -std=c++17 -O2 unbias_weights.cc $(root-config --cflags --libs) -o unbias_weights
+//   c++ -std=c++17 -O2 unbias_weights.cc \
+//       $(root-config --cflags --libs) \
+//       $(/data/ALEPH/MC/mcgen/fastjet-install/bin/fastjet-config --cxxflags --libs) \
+//       -o unbias_weights
 //
 // =====================================================================
 // The basis vectors used to construct the moments are fully configurable
@@ -40,9 +43,13 @@
 // Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
 // time over a radius scan R = 0.01..0.20 and stores them in branches
 // "subjet_pt_R0pXX".  The subjet-moment functions consume those stored
-// subjets directly.  A reclustering fallback (via subjet_basis.h) is
-// retained only for older constituent-only ntuples, selectable per radius
-// through --subjet-source.
+// subjets directly.  Two reclustering engines are available (via
+// subjet_basis.h) for older constituent-only ntuples, selectable through
+// --subjet-source: the original dependency-free homemade Cambridge/Aachen
+// loop ("recluster"), and a standalone-FastJet Cambridge/Aachen
+// implementation ("fastjet"), kept side by side as a crosscheck of
+// implementation (same algorithm, same radius, same massless E-scheme
+// inputs).
 //
 // Numerical safeguards:
 //   * dR_min screen on the EEC basis (ΔR^{−A} diverges as ΔR→0).
@@ -67,7 +74,7 @@
 //   --subjet-radii  "0.1,0.05"        subjet radii for the moment family
 //   --subjet-powers "3,4,...,10"      powers n for the moment family
 //   --subjet-R    <R>                 single-radius shortcut (default 0.1)
-//   --subjet-source {auto,precomputed,recluster}   how to obtain subjets
+//   --subjet-source {auto,precomputed,recluster,fastjet}   how to obtain subjets
 //   --dR-min      <val>               EEC small-angle screen (default 1e-3)
 //
 // The default basis (no basis flags) is the C/A R=0.1 subjet pT power sums,
@@ -78,7 +85,7 @@
 #include <TTree.h>
 
 #include "basis_functions.h"   // configurable multi-family basis framework + read_bin_center()
-#include "subjet_basis.h"      // recluster_ca_subjet_pts (reclustering fallback)
+#include "subjet_basis.h"      // recluster_ca_subjet_pts / recluster_fastjet_subjet_pts (reclustering engines)
 
 #include <algorithm>
 #include <cmath>
@@ -149,6 +156,13 @@ static RadiusPlan plan_tree_inputs(TTree *t,
     RadiusPlan plan;
     plan.need_constituents = req.constituents;
 
+    // Human-readable description of the reclustering engine used when a
+    // radius is not read from the precomputed branch (source_mode ==
+    // "recluster" or "fastjet", or "auto" falling back for a missing branch).
+    const std::string engine_label = (source_mode == "fastjet")
+        ? "recluster (fastjet) from const_pt/eta/phi"
+        : "recluster (homemade C/A) from const_pt/eta/phi";
+
     for (const int rtag : req.subjet_rtags) {
         const double R  = radius_from_tag(rtag);
         const std::string bn = subjet_branch_name("pt", R);
@@ -160,7 +174,7 @@ static RadiusPlan plan_tree_inputs(TTree *t,
                 die(label + ": --subjet-source precomputed but branch '" + bn +
                     "' was not found");
             precomp = true;
-        } else if (source_mode == "recluster") {
+        } else if (source_mode == "recluster" || source_mode == "fastjet") {
             precomp = false;
         } else {  // auto
             precomp = have;
@@ -171,7 +185,7 @@ static RadiusPlan plan_tree_inputs(TTree *t,
         std::cout << "  [" << label << "] subjet R=" << std::setprecision(2)
                   << std::fixed << R << std::setprecision(6)
                   << " -> " << (precomp ? ("precomputed '" + bn + "'")
-                                        : std::string("recluster from const_pt/eta/phi"))
+                                        : engine_label)
                   << std::endl;
     }
     if (req.constituents)
@@ -205,10 +219,12 @@ static void read_tree_jets(TTree *t,
                            const BasisInputs &req,
                            const RadiusPlan &plan,
                            double dR_min,
+                           const std::string &recluster_engine,
                            JetFn &&cb) {
     const bool array_style = (t->GetBranch(n_branch.c_str()) != nullptr);
     const bool has_source  = (t->GetBranch("source") != nullptr);
     const bool need_const  = plan.need_constituents;
+    const bool use_fastjet_engine = (recluster_engine == "fastjet");
 
     // Scratch storage for reclustered subjet lists (kept alive across the cb
     // call; JetData holds pointers into it).
@@ -236,8 +252,11 @@ static void read_tree_jets(TTree *t,
                 jd.subjet_pt[rtag] = sp;
             } else {
                 if (!cpt || !ceta || !cphi) { ok = false; break; }
-                recl[rtag] = recluster_ca_subjet_pts(*cpt, *ceta, *cphi,
-                                                     radius_from_tag(rtag));
+                recl[rtag] = use_fastjet_engine
+                    ? recluster_fastjet_subjet_pts(*cpt, *ceta, *cphi,
+                                                   radius_from_tag(rtag))
+                    : recluster_ca_subjet_pts(*cpt, *ceta, *cphi,
+                                              radius_from_tag(rtag));
                 jd.subjet_pt[rtag] = &recl[rtag];
             }
         }
@@ -454,8 +473,8 @@ int main(int argc, char *argv[]) {
     // not given on the command line, both default to this value. There is no
     // hard-coded fallback: if the config file (or its "Unbiasing.BinCenter"
     // key) is missing, read_bin_center() aborts with an error rather than
-    // guessing a number -- run startBasis.C first, or point --config at a
-    // valid file.
+    // silently using some made-up number -- run startBasis.C first, or point
+    // --config at a valid file.
     const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
     const double bin_center = read_bin_center(config_file);
     std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
@@ -498,8 +517,9 @@ int main(int argc, char *argv[]) {
 
     if (input.empty())        die("--input is required");
     if (run_mode != "run" && run_mode != "debug") die("--mode must be 'run' or 'debug'");
-    if (subjet_source != "auto" && subjet_source != "precomputed" && subjet_source != "recluster")
-        die("--subjet-source must be 'auto', 'precomputed', or 'recluster'");
+    if (subjet_source != "auto" && subjet_source != "precomputed" &&
+        subjet_source != "recluster" && subjet_source != "fastjet")
+        die("--subjet-source must be 'auto', 'precomputed', 'recluster', or 'fastjet'");
 
     // =================================================================
     // Build the (configurable) basis.
@@ -576,7 +596,7 @@ int main(int argc, char *argv[]) {
 
         const RadiusPlan tplan = plan_tree_inputs(tt, req, subjet_source, "target");
         read_tree_jets(tt, n_branch, pt_branch, wt_branch, pt_min, pt_max,
-                       req, tplan, dR_min,
+                       req, tplan, dR_min, subjet_source,
                        [&](const JetData &jd, double x, double w, int /*src*/) {
                            const std::vector<double> gv = evaluate_basis(basis, jd);
                            tgt_sumW += w; ++tgt_njets;
@@ -617,7 +637,7 @@ int main(int argc, char *argv[]) {
 
     const RadiusPlan splan = plan_tree_inputs(tree, req, subjet_source, "source");
     read_tree_jets(tree, n_branch, pt_branch, wt_branch, pt_min, pt_max,
-                   req, splan, dR_min,
+                   req, splan, dR_min, subjet_source,
                    [&](const JetData &jd, double x, double w, int src) {
                        pts.push_back(x); base_w.push_back(w); sources.push_back(src);
                        gvals.push_back(evaluate_basis(basis, jd));

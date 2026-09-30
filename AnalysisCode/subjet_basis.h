@@ -1,18 +1,40 @@
 // subjet_basis.h
 // =====================================================================
-// Self-contained Cambridge/Aachen subjet reclustering.
+// Subjet reclustering: two interchangeable engines.
 //
-// The basis-function framework itself now lives in basis_functions.h, and
-// the standard workflow consumes the subjets that ppjets_root.cc already
+// The basis-function framework itself lives in basis_functions.h, and the
+// standard workflow consumes the subjets that ppjets_root.cc already
 // clustered at ntuple-production time (branches "subjet_pt_R0pXX").  This
-// header is only the reclustering FALLBACK, used by unbias_weights.cc for
-// older constituent-only ntuples (--subjet-source recluster, or "auto"
-// when the stored branch is absent).
+// header supplies the RECLUSTERING path, used by unbias_weights.cc for
+// older constituent-only ntuples, or whenever asked for explicitly via
+// --subjet-source recluster / --subjet-source fastjet ("auto" uses
+// reclustering only when the stored branch is absent, and currently
+// falls back to the homemade engine in that case).
 //
-// The C/A reclustering is implemented here without a FastJet dependency,
-// so the tools build with root-config alone.  Constituents are treated as
-// massless (only pt/eta/phi are stored) and merged with the E-scheme
-// (4-momentum addition).
+// Two engines are provided, selected independently of each other so they
+// can be run side by side as a crosscheck of implementation:
+//
+//   * recluster_ca_subjet_pts(...)
+//       The original dependency-free Cambridge/Aachen reclustering,
+//       implemented here without any FastJet dependency.  Constituents
+//       are treated as massless (only pt/eta/phi are stored) and merged
+//       with the E-scheme (4-momentum addition).  Kept exactly as before
+//       and retained on its own as a crosscheck.
+//
+//   * recluster_fastjet_subjet_pts(...)
+//       The same Cambridge/Aachen algorithm and radius, but clustered by
+//       the standalone FastJet library itself (fastjet::ClusterSequence
+//       with fastjet::cambridge_algorithm), reading inclusive jets.  Same
+//       massless (pt,eta,phi) constituents and E-scheme recombination, so
+//       the two engines are a genuine crosscheck of implementation, not
+//       of algorithm choice.
+//
+// Because this file now offers the FastJet engine, any translation unit
+// that includes subjet_basis.h requires linking against FastJet, e.g.
+//   c++ -std=c++17 -O2 unbias_weights.cc \
+//       $(root-config --cflags --libs) \
+//       $(/data/ALEPH/MC/mcgen/fastjet-install/bin/fastjet-config --cxxflags --libs) \
+//       -o unbias_weights
 // =====================================================================
 #pragma once
 
@@ -21,6 +43,9 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+
+#include <fastjet/ClusterSequence.hh>
+#include <fastjet/PseudoJet.hh>
 
 // A pseudojet carrying a 4-momentum for E-scheme recombination.
 struct SubjetPseudo {
@@ -51,7 +76,7 @@ static inline double pseudo_phi(const SubjetPseudo &p) {
 }
 
 /// Recluster jet constituents into inclusive C/A subjets of radius R and
-/// return their pT values.
+/// return their pT values.  Homemade, dependency-free engine.
 ///
 /// C/A distances: d_ij = ΔR_ij² / R², d_iB = 1.  Since d_iB is fixed at
 /// 1, the closest pair merges iff its ΔR < R; once no pair is within R,
@@ -101,5 +126,37 @@ static std::vector<double> recluster_ca_subjet_pts(
     std::vector<double> pts;
     pts.reserve(jets.size());
     for (const auto &j : jets) pts.push_back(pseudo_pt(j));
+    return pts;
+}
+
+/// Recluster jet constituents into inclusive C/A subjets of radius R and
+/// return their pT values.  Standalone-FastJet engine: same algorithm
+/// (Cambridge/Aachen), same radius, same massless (pt,eta,phi) inputs and
+/// E-scheme recombination as recluster_ca_subjet_pts(...) above, but the
+/// clustering itself is performed by fastjet::ClusterSequence rather than
+/// the homemade loop -- a crosscheck of implementation, not of algorithm.
+static std::vector<double> recluster_fastjet_subjet_pts(
+        const std::vector<double> &cpt,
+        const std::vector<double> &ceta,
+        const std::vector<double> &cphi,
+        double R)
+{
+    std::vector<fastjet::PseudoJet> constituents;
+    constituents.reserve(cpt.size());
+    const size_t nc = cpt.size();
+    for (size_t i = 0; i < nc; ++i) {
+        if (cpt[i] <= 0.0) continue;
+        if (i >= ceta.size() || i >= cphi.size()) break;
+        const SubjetPseudo p = make_pseudo(cpt[i], ceta[i], cphi[i]);
+        constituents.emplace_back(p.px, p.py, p.pz, p.E);   // massless, E-scheme
+    }
+
+    const fastjet::JetDefinition jet_def(fastjet::cambridge_algorithm, R);
+    fastjet::ClusterSequence cs(constituents, jet_def);
+    const std::vector<fastjet::PseudoJet> subjets = cs.inclusive_jets();
+
+    std::vector<double> pts;
+    pts.reserve(subjets.size());
+    for (const auto &j : subjets) pts.push_back(j.pt());
     return pts;
 }
