@@ -37,6 +37,17 @@
 //   * canvases can be saved in multiple formats at once (--formats
 //     pdf,png,...).
 //
+// PT-BIN LABELING (plot text + file names)
+// -----------------------------------------
+// Every plot produced below is labeled with its pT bin -- both as text
+// drawn directly on the canvas (e.g. "100 < p_{T} < 140 GeV", top-left) and
+// as a "_<ptmin>_<ptmax>" suffix on every saved file name (e.g.
+// plot_unbias_pT_check_100_140.pdf) and on the default --out ROOT file name.
+// Both are derived automatically from --pt-min/--pt-max -- there is no
+// separate "bin label" flag to keep in sync by hand, so the label can never
+// drift from the window that was actually plotted. Integer-valued bin edges
+// are formatted without a decimal point (e.g. "100", not "100.0").
+//
 // BASIS-VECTOR PANEL CONFIGURABILITY
 // -----------------------------------
 // unbias_weights.cc can fit a basis with dozens of terms (EEC grid x
@@ -74,6 +85,7 @@
 #include <TCanvas.h>
 #include <TPad.h>
 #include <TLegend.h>
+#include <TLatex.h>
 #include <TStyle.h>
 #include <TVector2.h>
 #include <TMath.h>
@@ -136,6 +148,30 @@ static std::vector<std::string> parse_string_list(const std::string &s) {
     out.push_back(tok.substr(a, b - a + 1));
   }
   return out;
+}
+
+// ---- pT-bin formatting (shared by file names and the on-canvas label) ----
+// Integer-valued edges print without a decimal point (e.g. "100"); anything
+// else prints with one decimal place (e.g. "137.5").
+static std::string format_pt_for_name(double v) {
+  char buf[32];
+  if (std::abs(v - std::round(v)) < 1e-6)
+    std::snprintf(buf, sizeof(buf), "%d", (int)std::llround(v));
+  else
+    std::snprintf(buf, sizeof(buf), "%.1f", v);
+  return std::string(buf);
+}
+
+// Filename-safe suffix, e.g. "100_140" -- appended to every saved plot name
+// and to the default --out ROOT file name, so a bin's plots can never be
+// confused with another bin's.
+static std::string pt_bin_suffix(double pt_min, double pt_max) {
+  return format_pt_for_name(pt_min) + "_" + format_pt_for_name(pt_max);
+}
+
+// Human-readable on-canvas label, e.g. "100 < p_{T} < 140 GeV".
+static std::string pt_bin_label(double pt_min, double pt_max) {
+  return format_pt_for_name(pt_min) + " < p_{T} < " + format_pt_for_name(pt_max) + " GeV";
 }
 
 // =====================================================================
@@ -224,6 +260,18 @@ static TLegend *make_legend(double x1, double y1, double x2, double y2, const Pl
   leg->SetTextSize(cfg.legend_size);
   leg->SetTextFont(cfg.font);
   return leg;
+}
+
+// Draw the pT-bin label (e.g. "100 < p_{T} < 140 GeV") in NDC coordinates of
+// whichever pad is currently active. Called once per canvas/top-pad below so
+// every plot is unambiguously tagged with the bin it was made from.
+static void draw_bin_label(const std::string &label, const PlotConfig &cfg,
+                           double x = 0.16, double y = 0.92) {
+  TLatex *lt = new TLatex();
+  lt->SetNDC();
+  lt->SetTextFont(cfg.font);
+  lt->SetTextSize(cfg.legend_size);
+  lt->DrawLatex(x, y, label.c_str());
 }
 
 // Build the standard top(70%)/bottom(30%) main+ratio pad pair. Font sizes on
@@ -315,11 +363,19 @@ static void fill_eec(TH1D *h, const std::vector<double> &cpt,
 
 int main(int argc, char* argv[]) {
   const std::string input = get_arg(argc, argv, "--input");
-  const std::string out_name = get_arg(argc, argv, "--out", "unbias_weights_plots.root");
   const std::string target_input = get_arg(argc, argv, "--target-input");
   const std::string target_tree = get_arg(argc, argv, "--target-tree", "tX");
   const double pt_min = std::stod(get_arg(argc, argv, "--pt-min", "0.0"));
   const double pt_max = std::stod(get_arg(argc, argv, "--pt-max", "200.0"));
+
+  // pT-bin suffix/label, derived from --pt-min/--pt-max (see top-of-file
+  // docs): used below both for the default --out ROOT file name and for
+  // every saved plot's file name and on-canvas label.
+  const std::string pt_suffix = pt_bin_suffix(pt_min, pt_max);
+  const std::string pt_label  = pt_bin_label(pt_min, pt_max);
+
+  const std::string out_name = get_arg(argc, argv, "--out",
+                                       "unbias_weights_plots_" + pt_suffix + ".root");
   const int nbins = std::stoi(get_arg(argc, argv, "--nbins", "80"));
   const int eec_bins = std::stoi(get_arg(argc, argv, "--eec-bins", "60"));
   const double eec_max = std::stod(get_arg(argc, argv, "--eec-max", "0.4"));
@@ -357,6 +413,7 @@ int main(int argc, char* argv[]) {
                                : bin_center;
   std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
             << "  (EEC norm used here = " << eec_norm << ")" << std::endl;
+  std::cout << "pT bin: " << pt_label << "  (file suffix '" << pt_suffix << "')" << std::endl;
 
   if (input.empty()) die("--input is required");
   if (target_input.empty()) die("--target-input is required to compare against unbiased target");
@@ -491,6 +548,7 @@ int main(int argc, char* argv[]) {
   leg->AddEntry(h_total, "weighted sample (base x unbias)", "lp");
   leg->AddEntry(h_target, Form("unbiased target %s", target_tree.c_str()), "lp");
   leg->Draw();
+  draw_bin_label(pt_label, cfg);
 
   p_bot->cd();
   // Errors on the ratio come from standard uncorrelated TH1::Divide error
@@ -523,7 +581,7 @@ int main(int argc, char* argv[]) {
   h_eec_target->Write();
   c->Write();
 
-  save_canvas(c, "plot_unbias_pT_check", cfg);
+  save_canvas(c, "plot_unbias_pT_check_" + pt_suffix, cfg);
 
   // =====================================================================
   // Weight distribution
@@ -536,7 +594,8 @@ int main(int argc, char* argv[]) {
   TLegend *lw = make_legend(0.55, 0.78, 0.90, 0.90, cfg);
   lw->AddEntry(h_w_unbias, "unbias weights", "lp");
   lw->Draw();
-  save_canvas(cw, "plot_unbias_weights_weights", cfg);
+  draw_bin_label(pt_label, cfg);
+  save_canvas(cw, "plot_unbias_weights_weights_" + pt_suffix, cfg);
   delete cw;
 
   // =====================================================================
@@ -557,6 +616,7 @@ int main(int argc, char* argv[]) {
   lege->AddEntry(h_eec_total, "weighted sample (base x unbias)", "lp");
   lege->AddEntry(h_eec_target, Form("unbiased target %s", target_tree.c_str()), "lp");
   lege->Draw();
+  draw_bin_label(pt_label, cfg);
 
   p_eec_bot->cd();
   gPad->SetLogx();
@@ -571,7 +631,7 @@ int main(int argc, char* argv[]) {
   h_ratio_base_eec->Draw("E1 same");
   draw_unity_line(h_ratio_total_eec);
 
-  save_canvas(ce, "plot_eec_compare", cfg);
+  save_canvas(ce, "plot_eec_compare_" + pt_suffix, cfg);
   ce->Write();
 
   out.Close();
@@ -752,16 +812,20 @@ int main(int argc, char* argv[]) {
             rt->Draw("E1"); rb->Draw("E1 same");
             draw_unity_line(rt);
           }
-          save_canvas(ctw, "plot_theta_basis_weighted_compare", cfg);
+          // One overall pT-bin label for the whole grid (not per-panel, to
+          // avoid cluttering every individual basis-function panel).
+          ctw->cd();
+          draw_bin_label(pt_label, cfg, 0.02, 0.985);
+          save_canvas(ctw, "plot_theta_basis_weighted_compare_" + pt_suffix, cfg);
         }
       }
     }
     inb.Close();
   }
 
-  std::cout << "wrote " << out_name << " and plot_unbias_pT_check / "
-            << "plot_unbias_weights_weights / plot_eec_compare / "
-            << "plot_theta_basis_weighted_compare in: ";
+  std::cout << "wrote " << out_name << " and plot_unbias_pT_check_" << pt_suffix << " / "
+            << "plot_unbias_weights_weights_" << pt_suffix << " / plot_eec_compare_" << pt_suffix << " / "
+            << "plot_theta_basis_weighted_compare_" << pt_suffix << " in: ";
   for (const std::string &fmt : cfg.formats) std::cout << "." << fmt << " ";
   std::cout << std::endl;
   return 0;

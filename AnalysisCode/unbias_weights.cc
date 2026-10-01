@@ -40,6 +40,19 @@
 //   either family individually on the command line; when omitted, both
 //   default to the shared bin-center value read from --config.
 //
+// Per-bin subjet radii + EEC term grid (also in the shared config file):
+//   The same unbiasing_config.env additionally carries "Unbiasing.SubjetRadii"
+//   (a comma list, e.g. "0.10,0.20") and "Unbiasing.EECTermsFile" (a path to
+//   a small per-bin CSV file holding the full EEC (A,B,m,E) term grid for
+//   this bin). Both are read back strictly via basis_functions.h's
+//   read_subjet_radii() / read_eec_terms_from_config() -- missing either
+//   one aborts the run. This is what lets the subjet radii and the full EEC
+//   term grid (not just their normalizations) vary per pT bin instead of
+//   being fixed once in basis_functions.h. --subjet-radii / --subjet-R /
+//   --subjet-powers on the command line still override the config-file
+//   radii exactly as before; there is no CLI override for the EEC term
+//   grid -- edit that bin's CSV file instead.
+//
 // Subjet input: ppjets_root.cc clusters C/A subjets at ntuple-production
 // time over a radius scan R = 0.01..0.20 and stores them in branches
 // "subjet_pt_R0pXX".  The subjet-moment functions consume those stored
@@ -61,7 +74,8 @@
 //   (B) startBasis.C    -> one file with the biased/reference trees, now
 //                          carrying the forwarded subjet_pt_R0pXX branches,
 //                          and also writes the shared TEnv config file
-//                          (bin center + pT window) used below.
+//                          (bin center + pT window + subjet radii + EEC
+//                          terms file path) used below.
 //   (C) unbias_weights.cc reads that single file, e.g.
 //         ./unbias_weights --input startBasis_output.root --tree tBiased --target-tree tRef ...
 //       (--target-input defaults to --input, so one file suffices).
@@ -71,20 +85,23 @@
 //   --basis-eec   {off,on}            enable the EEC family
 //   --eec-norm    <val>               z normalisation (default: bin center from --config)
 //   --subjet-norm <val>               subjet-pT normalisation (default: bin center from --config)
-//   --subjet-radii  "0.1,0.05"        subjet radii for the moment family
+//   --subjet-radii  "0.1,0.05"        subjet radii for the moment family (default: --config's Unbiasing.SubjetRadii)
 //   --subjet-powers "3,4,...,10"      powers n for the moment family
 //   --subjet-R    <R>                 single-radius shortcut (default 0.1)
 //   --subjet-source {auto,precomputed,recluster,fastjet}   how to obtain subjets
 //   --dR-min      <val>               EEC small-angle screen (default 1e-3)
 //
-// The default basis (no basis flags) is the C/A R=0.1 subjet pT power sums,
-// n = 3..10, sourced from the stored subjets.
+// The default basis has no per-run override flags for the EEC term grid --
+// it always comes from this bin's --config Unbiasing.EECTermsFile CSV. The
+// default subjet-moment basis (absent any --subjet-* flag) is this bin's
+// --config Unbiasing.SubjetRadii, each paired with powers n = 3..10 (or
+// --subjet-powers).
 // =====================================================================
 
 #include <TFile.h>
 #include <TTree.h>
 
-#include "basis_functions.h"   // configurable multi-family basis framework + read_bin_center()
+#include "basis_functions.h"   // configurable multi-family basis framework + read_bin_center() / read_subjet_radii() / read_eec_terms_from_config()
 #include "subjet_basis.h"      // recluster_ca_subjet_pts / recluster_fastjet_subjet_pts (reclustering engines)
 
 #include <algorithm>
@@ -135,6 +152,19 @@ static std::vector<double> parse_doubles(const std::string &s) {
         out.push_back(std::stod(tok.substr(a, b - a + 1)));
     }
     return out;
+}
+
+// Join a list of numbers into a comma-separated string -- the inverse of
+// parse_doubles().  Used so --subjet-radii's own default (when the flag
+// isn't passed) resolves to this bin's --config Unbiasing.SubjetRadii
+// rather than a hard-coded literal.
+static std::string join_doubles(const std::vector<double> &v, char sep) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) oss << sep;
+        oss << v[i];
+    }
+    return oss.str();
 }
 
 // =====================================================================
@@ -466,23 +496,36 @@ int main(int argc, char *argv[]) {
     const std::string lr_spec      = get_arg(argc, argv, "--adam-lr",       "auto");
     const std::string subjet_source = get_arg(argc, argv, "--subjet-source", "precomputed");
 
-    // ---- Shared bin-center config (written by startBasis.C) ----
+    // ---- Shared per-bin config (written by startBasis.C) ----
     // This single TEnv file is the one place that defines the momentum scale
-    // ("bin center") used to normalize both basis families below. --eec-norm
-    // and --subjet-norm can still override either family individually; when
-    // not given on the command line, both default to this value. There is no
-    // hard-coded fallback: if the config file (or its "Unbiasing.BinCenter"
-    // key) is missing, read_bin_center() aborts with an error rather than
-    // silently using some made-up number -- run startBasis.C first, or point
-    // --config at a valid file.
+    // ("bin center"), the subjet radii, and the EEC term grid used to build
+    // the basis below. --eec-norm and --subjet-norm can still override the
+    // norms individually; --subjet-radii/--subjet-R/--subjet-powers can
+    // still override the subjet radii/powers. There is no CLI override for
+    // the EEC term grid, and no hard-coded fallback for any of these: if the
+    // config file (or any of the keys it must have) is missing, the
+    // corresponding read_*() call below aborts rather than guessing.
     const std::string config_file = get_arg(argc, argv, "--config", "unbiasing_config.env");
     const double bin_center = read_bin_center(config_file);
     std::cout << "Bin-center config: '" << config_file << "'  BinCenter=" << bin_center
               << std::endl;
 
+    const std::vector<double> config_subjet_radii = read_subjet_radii(config_file);
+    std::cout << "Config subjet radii:";
+    for (double R : config_subjet_radii) std::cout << " " << R;
+    std::cout << std::endl;
+
+    const std::vector<EECTermSpec> config_eec_terms = read_eec_terms_from_config(config_file);
+    std::cout << "Config EEC terms: " << config_eec_terms.size() << " term(s) read" << std::endl;
+
     // ---- Basis configuration flags (VERSION 6) ----
     const std::string basis_eec_s  = get_arg(argc, argv, "--basis-eec",     "on");
-    const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",  "0.1,0.2");
+    // --subjet-radii's own default (used only if the flag itself is not
+    // passed) is this bin's config-file radii, not a hard-coded literal --
+    // so a run that only passes e.g. --subjet-powers still keeps this bin's
+    // configured radii rather than silently reverting to some other bin's.
+    const std::string subjet_radii_s  = get_arg(argc, argv, "--subjet-radii",
+                                                 join_doubles(config_subjet_radii, ','));
     const std::string subjet_powers_s = get_arg(argc, argv, "--subjet-powers", "1,2,3,4,5,6,7,8,9,10,11,12");
 
     const double pt_min  = std::stod(get_arg(argc, argv, "--pt-min", "0.0"));
@@ -524,11 +567,14 @@ int main(int argc, char *argv[]) {
     // =================================================================
     // Build the (configurable) basis.
     // -----------------------------------------------------------------
-    // Start from the header defaults (BasisConfig / build_basis in
-    // basis_functions.h), then apply the command-line overrides below.
-    // To hard-code a bespoke basis (e.g. per-radius power lists, custom
-    // EEC terms), edit BasisConfig in basis_functions.h and comment out
-    // the CLI-override block marked >>> below.
+    // Start from this bin's config-file values (subjet radii, EEC term
+    // grid), then apply the command-line overrides below (subjet radii only
+    // -- there is no CLI override for the EEC term grid). To hard-code a
+    // bespoke basis for local testing, edit BasisConfig's compiled defaults
+    // in basis_functions.h instead -- but note that, unlike before, those
+    // compiled defaults are never actually reached in a normal run, since
+    // both cfg.eec_terms and cfg.subjet_moments are unconditionally
+    // overwritten below from this bin's config file.
     // =================================================================
     BasisConfig cfg;
     cfg.use_eec     = (basis_eec_s == "on" || basis_eec_s == "1" || basis_eec_s == "true");
@@ -536,24 +582,34 @@ int main(int argc, char *argv[]) {
     cfg.subjet_norm = subjet_norm;
     cfg.eec_dR_min  = dR_min;
 
+    // EEC term grid: always this bin's config-file CSV (Unbiasing.EECTermsFile).
+    // No CLI override -- edit that bin's CSV file instead.
+    cfg.eec_terms = config_eec_terms;
+
+    // Subjet-moment family: default to this bin's config-file radii
+    // (Unbiasing.SubjetRadii), each paired with the same power list
+    // (--subjet-powers, or its own default if not given).
+    const std::vector<double> default_powers = subjet_powers_s.empty()
+        ? std::vector<double>{ 3, 4, 5, 6, 7, 8, 9, 10 }
+        : parse_doubles(subjet_powers_s);
+    cfg.subjet_moments.clear();
+    for (const double R : config_subjet_radii)
+        cfg.subjet_moments.push_back({ R, default_powers });
+
     // >>> CLI override of the subjet-moment family (radii × powers) <<<
     // Only rebuild the subjet-moment list from the command line when the user
-    // actually passes one of the subjet flags.  If none are given, the header
-    // BasisConfig above is authoritative — so editing its `subjet_moments`
-    // (e.g. adding a second radius) takes effect exactly as written.
+    // actually passes one of the subjet flags.  If none are given, the
+    // config-file radii above (paired with default_powers) are authoritative.
     if (has_arg(argc, argv, "--subjet-radii") ||
         has_arg(argc, argv, "--subjet-powers") ||
         has_arg(argc, argv, "--subjet-R")) {
         std::vector<double> radii = subjet_radii_s.empty()
             ? std::vector<double>{ subjet_R }
             : parse_doubles(subjet_radii_s);
-        std::vector<double> powers = subjet_powers_s.empty()
-            ? std::vector<double>{ 3, 4, 5, 6, 7, 8, 9, 10 }
-            : parse_doubles(subjet_powers_s);
         cfg.subjet_moments.clear();
         for (const double R : radii) {
             if (R <= 0.0) die("--subjet-radii entries must be positive");
-            cfg.subjet_moments.push_back({ R, powers });
+            cfg.subjet_moments.push_back({ R, default_powers });
         }
     }
     // >>> end CLI override <<<

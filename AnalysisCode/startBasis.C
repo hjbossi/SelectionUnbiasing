@@ -2,6 +2,17 @@
 // Hannah Bossi, <hannah.bossi@cern.ch>
 // December 19th, 2025
 
+// Include guard: driveBins.C now pulls this file in via
+// #include "startBasis.C" (needed so startBasis(...) resolves at Cling's
+// compile time -- see driveBins.C's own comment). Without a guard, if this
+// file ends up included more than once in the same translation unit --
+// e.g. ROOT's own macro-autoloading also pulling it in by its
+// file-name/function-name match -- every top-level function here
+// (GetFiles, FillChain, startBasis, ...) gets defined twice, which is the
+// "redefinition of 'GetFiles'" / "redefinition of 'FillChain'" error.
+#ifndef STARTBASIS_C_INCLUDED
+#define STARTBASIS_C_INCLUDED
+
 #include <TFile.h>
 #include <TChain.h>
 #include <TTreeReader.h>
@@ -18,6 +29,8 @@
 #include <TSystemDirectory.h>
 #include <TSystemFile.h>
 #include <TList.h>
+
+#include "basis_functions.h"   // default_eec_terms() / write_eec_terms_csv(): bootstrap grid for a new bin's EEC terms CSV
 
 #include <vector>
 #include <string>
@@ -75,7 +88,20 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
                 // "derive it from the pT window" (the midpoint); pass a
                 // positive value to set it explicitly instead.
                 double binCenter = -1.0,
-                const char* configFile = "unbiasing_config.env") {
+                const char* configFile = "unbiasing_config.env",
+                // Per-bin basis configuration -- lets the subjet clustering
+                // radii and the full EEC (A,B,m,E) term grid vary per pT bin
+                // instead of being fixed once in basis_functions.h. Both are
+                // written into configFile and read back strictly (no
+                // hard-coded fallback) by unbias_weights.cc via
+                // read_subjet_radii() / read_eec_terms_from_config().
+                const char* subjetRadii = "0.10,0.20",
+                // Path to a small per-bin CSV file (header "A,B,m,E", one
+                // term per row) holding this bin's full EEC term grid. Leave
+                // empty to auto-generate one next to configFile from the
+                // compiled default_eec_terms() grid, which you can then
+                // hand-edit for this bin.
+                const char* eecTermsFile = "") {
 
   // config
   const char* treeName = "tgenBefore";
@@ -90,15 +116,42 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
   // basis_functions.h) instead of hard-coding the number (previously
   // 120.0, duplicated in three separate places).
   const double binCenterUsed = (binCenter > 0.0) ? binCenter : 0.5 * (pTLow + pTHigh);
+
+  // -----------------------------
+  // Per-bin subjet radii + EEC term grid
+  // -----------------------------
+  // subjetRadii is written to the config file as-is (a comma list, e.g.
+  // "0.10,0.20"). eecTermsFile is a path to this bin's EEC terms CSV; if
+  // left empty, a default grid (the compiled default_eec_terms() list) is
+  // written to a file next to configFile, so a new bin starts from a sane
+  // grid that can then be hand-edited. Both are read back strictly by
+  // unbias_weights.cc -- there is no hard-coded fallback downstream.
+  std::string eecTermsFilePath = eecTermsFile;
+  if (eecTermsFilePath.empty()) {
+    std::string base = configFile;
+    const std::string suffix = ".env";
+    if (base.size() > suffix.size() &&
+        base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
+      base = base.substr(0, base.size() - suffix.size());
+    eecTermsFilePath = base + "_eec_terms.csv";
+    write_eec_terms_csv(eecTermsFilePath, default_eec_terms());
+    std::cout << "No eecTermsFile given; wrote default EEC term grid to '"
+              << eecTermsFilePath << "'" << std::endl;
+  }
+
   {
     TEnv config(configFile);
     config.SetValue("Unbiasing.BinCenter", binCenterUsed);
     config.SetValue("Unbiasing.PtLow", pTLow);
     config.SetValue("Unbiasing.PtHigh", pTHigh);
+    config.SetValue("Unbiasing.SubjetRadii", subjetRadii);
+    config.SetValue("Unbiasing.EECTermsFile", eecTermsFilePath.c_str());
     config.SaveLevel(kEnvLocal);
     std::cout << "Wrote shared analysis config to '" << configFile << "'"
               << "  (BinCenter=" << binCenterUsed
-              << ", PtLow=" << pTLow << ", PtHigh=" << pTHigh << ")" << std::endl;
+              << ", PtLow=" << pTLow << ", PtHigh=" << pTHigh
+              << ", SubjetRadii=" << subjetRadii
+              << ", EECTermsFile=" << eecTermsFilePath << ")" << std::endl;
   }
 
   std::vector<string> files;
@@ -237,7 +290,7 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
 
     if (iev % 100000 == 0)
       cout << "On event " << iev << endl;
-    
+
     ++iev;
 
     for (int j = 0; j < *nJets; ++j) {
@@ -341,8 +394,8 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
       tBiased->Fill();
     }
   }
-  
-  // first clone pT X 
+
+  // first clone pT X
   TH1D* hpTpp = (TH1D*)hPtX->Clone("hpTpp");
   // then add pT Y
   hpTpp->Add(hPtY);
@@ -432,3 +485,5 @@ void startBasis(const char* inputDir = "/home/hbossi/SelectionUnbiasing/MCOutput
             << std::endl;
   fout.Close();
 }
+
+#endif // STARTBASIS_C_INCLUDED

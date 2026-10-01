@@ -40,6 +40,27 @@
 // the one line in startBasis.C (or its `binCenter` argument) that writes
 // it to the config file; nothing else needs to change.
 //
+// PER-BIN SUBJET RADII + EEC TERM GRID
+// -------------------------------------
+// The same shared config file also carries two more per-bin values, so the
+// subjet clustering radii and the full EEC (A,B,m,E) term grid can vary
+// per pT bin instead of being fixed once for the whole sample:
+//
+//   * "Unbiasing.SubjetRadii" -- a comma list of subjet radii for this bin
+//     (e.g. "0.10,0.20"), read back via read_subjet_radii().
+//   * "Unbiasing.EECTermsFile" -- a path to a small per-bin CSV file
+//     (header "A,B,m,E", one term per row) holding this bin's full EEC
+//     term grid, read back via read_eec_terms_from_config() /
+//     read_eec_terms_csv(). write_eec_terms_csv() is the writer
+//     counterpart, used by startBasis.C to bootstrap a new bin's file from
+//     the compiled default_eec_terms() grid below.
+//
+// Both are strict, exactly like read_bin_center(): missing the key (or, for
+// the EEC terms, the CSV file it points to) aborts with a clear error
+// rather than silently falling back to some compiled default. build_basis()
+// itself no longer uses default_eec_terms() as a runtime fallback -- it is
+// only ever the *bootstrap* grid a new bin's CSV starts from.
+//
 // DESIGN
 // ------
 //   * `BasisFunction`  -- abstract base: one scalar moment per jet, plus a
@@ -66,9 +87,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -113,6 +137,53 @@ inline double read_bin_center(const std::string& config_file) {
         std::exit(1);
     }
     return env.GetValue("Unbiasing.BinCenter", 0.0);  // key existence already checked above
+}
+
+// Split a comma-separated line into trimmed fields. Shared by
+// read_subjet_radii() (parsing "Unbiasing.SubjetRadii") and the EEC terms
+// CSV reader below (parsing one "A,B,m,E" row).
+inline std::vector<std::string> split_csv_line(const std::string& line) {
+    std::vector<std::string> out;
+    std::stringstream ss(line);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        const size_t a = tok.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos) { out.push_back(""); continue; }
+        const size_t b = tok.find_last_not_of(" \t\r\n");
+        out.push_back(tok.substr(a, b - a + 1));
+    }
+    return out;
+}
+
+// Read this bin's subjet radii from the shared TEnv config file
+// ("Unbiasing.SubjetRadii", a comma list e.g. "0.10,0.20"). Strict, like
+// read_bin_center(): aborts if the file or key is missing rather than
+// falling back to a compiled default.
+inline std::vector<double> read_subjet_radii(const std::string& config_file) {
+    TEnv env(config_file.c_str());
+    TEnvRec* rec = env.Lookup("Unbiasing.SubjetRadii");
+    if (!rec) {
+        std::fprintf(stderr,
+            "ERROR: subjet radii not found -- config file '%s' does not "
+            "exist or has no 'Unbiasing.SubjetRadii' key.\n"
+            "Run startBasis.C for this bin first (it writes this key), or "
+            "pass --config pointing at a valid unbiasing_config.env. There "
+            "is no hard-coded fallback value.\n", config_file.c_str());
+        std::exit(1);
+    }
+    const std::string s = env.GetValue("Unbiasing.SubjetRadii", "");
+    std::vector<double> radii;
+    for (const std::string& tok : split_csv_line(s)) {
+        if (tok.empty()) continue;
+        radii.push_back(std::stod(tok));
+    }
+    if (radii.empty()) {
+        std::fprintf(stderr,
+            "ERROR: 'Unbiasing.SubjetRadii' in '%s' is empty or unparseable "
+            "('%s').\n", config_file.c_str(), s.c_str());
+        std::exit(1);
+    }
+    return radii;
 }
 
 // =====================================================================
@@ -312,29 +383,132 @@ inline std::string make_subjet_moment_label(double R, double n, double norm) {
 }
 
 // -------- the standard EEC term set (A x B x m grid) ------------------
+// This is now only ever used as a BOOTSTRAP grid: startBasis.C writes it
+// (via write_eec_terms_csv() below) into a new bin's EEC-terms CSV file
+// when that bin doesn't specify its own. build_basis() itself no longer
+// falls back to this at run time -- every bin's actual term grid comes from
+// its own CSV file, read via read_eec_terms_from_config().
 inline std::vector<EECTermSpec> default_eec_terms() {
     return {
-        { -1.0, 4.0, 1, 0.1, "" }, 
+        { -1.0, 4.0, 1, 0.1, "" },
         { -1.0, 3.0, 1, 0.1, "" },
-        { -1.0, 2.0, 1, 0.1, "" }, 
+        { -1.0, 2.0, 1, 0.1, "" },
         { -1.0, 1.0, 1, 0.1, "" },
         { -1.0, 0.0, 1, 0.1, "" },
-        { -0.5, 4.0, 2, 0.4, "" }, 
+        { -0.5, 4.0, 2, 0.4, "" },
         { -0.5, 3.0, 2, 0.4, "" },
-        { -0.5, 2.0, 2, 0.4, "" }, 
+        { -0.5, 2.0, 2, 0.4, "" },
         { -0.5, 1.0, 2, 0.4, "" },
         { -0.5, 0.0, 2, 0.4, "" },
-        { -1.0, 4.0, 2, 0.4, "" }, 
+        { -1.0, 4.0, 2, 0.4, "" },
         { -1.0, 3.0, 2, 0.4, "" },
-        { -1.0, 2.0, 2, 0.4, "" }, 
+        { -1.0, 2.0, 2, 0.4, "" },
         { -1.0, 1.0, 2, 0.4, "" },
         { -1.0, 0.0, 2, 0.4, "" },
-        { -1.5, 4.0, 2, 0.4, "" }, 
+        { -1.5, 4.0, 2, 0.4, "" },
         { -1.5, 3.0, 2, 0.4, "" },
-        { -1.5, 2.0, 2, 0.4, "" }, 
+        { -1.5, 2.0, 2, 0.4, "" },
         { -1.5, 1.0, 2, 0.4, "" },
         { -1.5, 0.0, 2, 0.4, "" },
     };
+}
+
+// Write a bin's EEC term grid to a small CSV file: a header row
+// ("A,B,m,E") followed by one row per term. Used by startBasis.C to
+// bootstrap a new bin's file from default_eec_terms() (or to persist any
+// other grid it was given), and generally to (re)generate a bin's file
+// from a vector of EECTermSpec.
+inline void write_eec_terms_csv(const std::string& path,
+                                const std::vector<EECTermSpec>& terms) {
+    std::ofstream out(path);
+    if (!out) {
+        std::fprintf(stderr,
+            "ERROR: could not open '%s' for writing EEC terms.\n", path.c_str());
+        std::exit(1);
+    }
+    out << "A,B,m,E\n";
+    for (const EECTermSpec& t : terms)
+        out << t.A << "," << t.B << "," << t.m << "," << t.E << "\n";
+}
+
+// Read a bin's EEC term grid from a CSV file written by write_eec_terms_csv
+// (or hand-edited in the same format: one "A,B,m,E" row per term). Tolerates
+// an optional header row (skipped if its first field isn't numeric), blank
+// lines, and '#'-prefixed comment lines. Strict on malformed data: aborts
+// with the offending line number and content rather than silently skipping
+// or guessing.
+inline std::vector<EECTermSpec> read_eec_terms_csv(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        std::fprintf(stderr, "ERROR: could not open EEC terms file '%s'.\n",
+                     path.c_str());
+        std::exit(1);
+    }
+    std::vector<EECTermSpec> terms;
+    std::string line;
+    int lineno = 0;
+    bool first_data_line = true;
+    while (std::getline(in, line)) {
+        ++lineno;
+        const size_t a = line.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos) continue;   // blank line
+        if (line[a] == '#') continue;            // comment line
+
+        const std::vector<std::string> fields = split_csv_line(line);
+
+        if (first_data_line) {
+            first_data_line = false;
+            // Tolerate an optional header row: if the first field isn't
+            // parseable as a number, treat this line as a header and skip it.
+            if (!fields.empty()) {
+                char* endp = nullptr;
+                std::strtod(fields[0].c_str(), &endp);
+                const bool looks_numeric = (endp != fields[0].c_str());
+                if (!looks_numeric) continue;
+            }
+        }
+
+        if (fields.size() != 4) {
+            std::fprintf(stderr,
+                "ERROR: %s:%d: expected 4 fields (A,B,m,E), got %zu: '%s'\n",
+                path.c_str(), lineno, fields.size(), line.c_str());
+            std::exit(1);
+        }
+        EECTermSpec t;
+        t.A = std::stod(fields[0]);
+        t.B = std::stod(fields[1]);
+        t.m = std::stoi(fields[2]);
+        t.E = std::stod(fields[3]);
+        t.label = "";
+        terms.push_back(t);
+    }
+    if (terms.empty()) {
+        std::fprintf(stderr, "ERROR: EEC terms file '%s' has no data rows.\n",
+                     path.c_str());
+        std::exit(1);
+    }
+    return terms;
+}
+
+// Read this bin's EEC term grid: resolve "Unbiasing.EECTermsFile" from the
+// shared TEnv config file (strict, like read_bin_center()/read_subjet_radii()
+// -- aborts if the key is missing), then parse that CSV file
+// (read_eec_terms_csv(), also strict).
+inline std::vector<EECTermSpec> read_eec_terms_from_config(const std::string& config_file) {
+    TEnv env(config_file.c_str());
+    TEnvRec* rec = env.Lookup("Unbiasing.EECTermsFile");
+    if (!rec) {
+        std::fprintf(stderr,
+            "ERROR: EEC terms file path not found -- config file '%s' does "
+            "not exist or has no 'Unbiasing.EECTermsFile' key.\n"
+            "Run startBasis.C for this bin first (it writes this key and "
+            "generates a default terms CSV next to the config file), or "
+            "pass --config pointing at a valid unbiasing_config.env. There "
+            "is no hard-coded fallback value.\n", config_file.c_str());
+        std::exit(1);
+    }
+    const std::string path = env.GetValue("Unbiasing.EECTermsFile", "");
+    return read_eec_terms_csv(path);
 }
 
 // =====================================================================
@@ -354,6 +528,14 @@ inline std::vector<EECTermSpec> default_eec_terms() {
 // written by startBasis.C) before calling build_basis(); build_basis()
 // checks this and aborts with a clear error if a norm was left unset, so a
 // caller can never silently fall back to some made-up number.
+//
+// `eec_terms` and `subjet_moments` below are likewise only compiled-in
+// starting points -- unbias_weights.cc unconditionally overwrites both
+// from this bin's shared config file (read_eec_terms_from_config() /
+// read_subjet_radii()) before calling build_basis(), so in practice these
+// two fields' compiled values are never actually used by unbias_weights.cc;
+// build_basis() aborts if use_eec is on but eec_terms ends up empty, the
+// same way it already does for the two norms.
 // =====================================================================
 struct BasisConfig {
     // ---- Energy-correlator family ----
@@ -377,6 +559,9 @@ struct BasisConfig {
 // is actually in use has never had its norm set from the shared config
 // file (see BasisConfig comment above) -- this is what makes "no hard-coded
 // bin center anywhere" an enforced invariant rather than just a convention.
+// Likewise aborts if use_eec is on but eec_terms is empty -- a bin whose
+// config-file CSV somehow resolved to zero terms is a configuration
+// mistake, not something to silently proceed with an empty EEC family.
 inline Basis build_basis(const BasisConfig& cfg) {
     if (cfg.use_eec && !(cfg.eec_norm > 0.0)) {
         std::fprintf(stderr,
@@ -384,6 +569,15 @@ inline Basis build_basis(const BasisConfig& cfg) {
             "unbiasing_config.env. Call read_bin_center(config_file) and "
             "assign the result to cfg.eec_norm before build_basis(). There "
             "is no hard-coded fallback.\n", cfg.eec_norm);
+        std::exit(1);
+    }
+    if (cfg.use_eec && cfg.eec_terms.empty()) {
+        std::fprintf(stderr,
+            "ERROR: BasisConfig::eec_terms is empty while use_eec is on -- "
+            "it was never set from this bin's EEC terms CSV. Call "
+            "read_eec_terms_from_config(config_file) and assign the result "
+            "to cfg.eec_terms before build_basis(). There is no compiled "
+            "fallback.\n");
         std::exit(1);
     }
     if (!cfg.subjet_moments.empty() && !(cfg.subjet_norm > 0.0)) {
