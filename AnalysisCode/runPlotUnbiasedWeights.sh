@@ -53,30 +53,63 @@ cd "$(dirname "$0")" || exit 1
 FILES=../Output/files
 PLOTS=../Output/plots
 mkdir -p "$FILES" "$PLOTS"
+# Sample tag (required, e.g. export UNBIAS_TAG=10M): must match the one used for
+# driveBins.C; every file name below ends in _<tag>.
+if [ -z "$UNBIAS_TAG" ]; then
+  echo "$(basename "$0"): UNBIAS_TAG is not set. Name the input sample, e.g. export UNBIAS_TAG=10M" >&2
+  exit 1
+fi
+S=_$UNBIAS_TAG
+TAGARG="--tag $UNBIAS_TAG"   # plot names get _<tag> too
+# Plotting backend (UNBIAS_PLOTTER, see SETUP.md): root (default), matplotlib or both.
+# ROOT plots go to $PLOTS/root, matplotlib plots (plot_mpl.py) to $PLOTS/mpl.
+# plot_unbias_weights always runs: it fills the histograms that plot_mpl.py reads.
+PLOTTER=${UNBIAS_PLOTTER:-root}
+PY=${UNBIAS_PYTHON:-python3}
+ROOT_DIR=$PLOTS/root
+case "$PLOTTER" in
+  root)       ROOT_FORMATS=pdf;  MPL_DIR= ;;
+  matplotlib) ROOT_FORMATS=none; MPL_DIR=$PLOTS/mpl ;;
+  both)       ROOT_FORMATS=pdf;  MPL_DIR=$PLOTS/mpl ;;
+  *) echo "UNBIAS_PLOTTER=$PLOTTER not understood (root, matplotlib or both)" >&2; exit 1 ;;
+esac
+mkdir -p "$ROOT_DIR"
 
 # ---- Bin 1: 100-140 GeV ----
 ./plot_unbias_weights \
-    --input $FILES/unbias_weights_100_140.root \
-    --target-input $FILES/startBasis_100_140.root \
+    --input $FILES/unbias_weights_100_140${S}.root \
+    --target-input $FILES/startBasis_100_140${S}.root \
     --target-tree tRef \
-    --config $FILES/unbiasing_config_100_140.env \
+    --config $FILES/unbiasing_config_100_140${S}.env \
     --pt-min 100 --pt-max 140 \
     --jet-R 0.4 --sd-zcut 0.1 --sd-beta 1.0 --nsub-beta 1.0 \
     ${SUBSTRUCTURE_BINNING} \
-    --plot-dir $PLOTS \
-    --out $FILES/unbias_weights_plots_100_140.root
+    --plot-dir $ROOT_DIR --formats $ROOT_FORMATS ${TAGARG} \
+    --out $FILES/unbias_weights_plots_100_140${S}.root
+if [ -n "$MPL_DIR" ]; then
+  $PY plot_mpl.py unbias \
+      --hists $FILES/unbias_weights_plots_100_140${S}.root \
+      --weights $FILES/unbias_weights_100_140${S}.root \
+      --pt-min 100 --pt-max 140 ${TAGARG} --target-tree tRef --plot-dir $MPL_DIR
+fi
 
 # ---- Bin 2: 140-180 GeV ----
 ./plot_unbias_weights \
-    --input $FILES/unbias_weights_140_180.root \
-    --target-input $FILES/startBasis_140_180.root \
+    --input $FILES/unbias_weights_140_180${S}.root \
+    --target-input $FILES/startBasis_140_180${S}.root \
     --target-tree tRef \
-    --config $FILES/unbiasing_config_140_180.env \
+    --config $FILES/unbiasing_config_140_180${S}.env \
     --pt-min 140 --pt-max 180 \
     --jet-R 0.4 --sd-zcut 0.1 --sd-beta 1.0 --nsub-beta 1.0 \
     ${SUBSTRUCTURE_BINNING} \
-    --plot-dir $PLOTS \
-    --out $FILES/unbias_weights_plots_140_180.root
+    --plot-dir $ROOT_DIR --formats $ROOT_FORMATS ${TAGARG} \
+    --out $FILES/unbias_weights_plots_140_180${S}.root
+if [ -n "$MPL_DIR" ]; then
+  $PY plot_mpl.py unbias \
+      --hists $FILES/unbias_weights_plots_140_180${S}.root \
+      --weights $FILES/unbias_weights_140_180${S}.root \
+      --pt-min 140 --pt-max 180 ${TAGARG} --target-tree tRef --plot-dir $MPL_DIR
+fi
 
 # Example paper-figure run instead (bigger text, PDF+PNG, a curated subset
 # of basis panels, and explicit jet-substructure crosscheck parameters) --

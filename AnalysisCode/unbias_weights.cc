@@ -123,6 +123,19 @@
 //   --dR-min      <val>               EEC small-angle screen, REFERENCE value
 //                                     (default 1e-3; scaled by 100/BinCenter)
 //
+// Fit length / convergence:
+//   --max-iter    <N|auto>            fixed number of Adam iterations (default 20), or
+//                                     "auto": run until converged:
+//   --converge-accuracy <a>           auto: stop once every moment matches its target to a
+//                                     (relative, max over moments = mx_rel) (default 5e-3)
+//   --converge-rtol   <r>             auto: a window counts as stalled if the best loss
+//                                     improved by less than r (relative) (default 1e-3)
+//   --converge-window <W>             auto: window length in iterations (default 100)
+//   --converge-decays <n>             auto: on a stall, return to the best point and halve
+//                                     the learning rate; stop at the n+1-th stall (default 3)
+//   --max-iter-cap    <N>             auto: hard upper limit on iterations (default 5000)
+// The meta tree records n_iter and converged (1/0).
+//
 // The default basis has no per-run override flags for the EEC term grid --
 // it always comes from this bin's --config Unbiasing.EECTermsFile CSV. The
 // default subjet-moment basis (absent any --subjet-* flag) is this bin's
@@ -642,7 +655,18 @@ int main(int argc, char *argv[]) {
                                     ? std::stod(get_arg(argc, argv, "--subjet-norm"))
                                     : bin_center;
 
-    const int    max_iter        = std::stoi(get_arg(argc, argv, "--max-iter",       "20")); // likely need to make this higher
+    // --max-iter N: fixed number of iterations.  --max-iter auto: adaptive -- stop once every
+    // moment matches its target to --converge-accuracy (relative), or once the best loss
+    // improves by less than --converge-rtol over --converge-window iterations after
+    // --converge-decays learning-rate halvings (see the Adam loop), or at --max-iter-cap.
+    const std::string max_iter_spec = get_arg(argc, argv, "--max-iter",       "20"); // likely need to make this higher
+    const bool   adaptive        = (max_iter_spec == "auto");
+    const int    max_iter        = adaptive ? std::stoi(get_arg(argc, argv, "--max-iter-cap", "5000"))
+                                            : std::stoi(max_iter_spec);
+    const double conv_acc        = std::stod(get_arg(argc, argv, "--converge-accuracy", "5e-3"));
+    const double conv_rtol       = std::stod(get_arg(argc, argv, "--converge-rtol",   "1e-3"));
+    const int    conv_window     = std::stoi(get_arg(argc, argv, "--converge-window", "100"));
+    const int    conv_decays     = std::stoi(get_arg(argc, argv, "--converge-decays", "3"));
     const double loss_tol        = std::stod(get_arg(argc, argv, "--loss-tol",       "1e-10"));
     const double tol             = std::stod(get_arg(argc, argv, "--tol",            "1e-6"));
     const double adam_beta1      = std::stod(get_arg(argc, argv, "--adam-beta1",     "0.9"));
@@ -916,11 +940,23 @@ int main(int argc, char *argv[]) {
     int best_it = 0;
     double cur_lr = adam_lr;
 
+    // adaptive stopping state
+    double window_ref_loss = 1e30;   // best loss at the start of the current window
+    int    n_decays = 0;
+    int    n_iter_done = 0;
+    int    converged_flag = 0;
+
     std::cout << "Starting Adam (" << nphys << " params + analytic norm)" << std::endl;
     std::cout << "  lr=" << std::scientific << cur_lr << std::fixed
-              << "  max_iter=" << MI << std::endl << std::endl;
+              << "  max_iter=" << MI;
+    if (adaptive && !dbg)
+        std::cout << " (adaptive cap)  converge-accuracy=" << std::scientific << conv_acc
+                  << "  converge-rtol=" << conv_rtol << std::fixed
+                  << "  window=" << conv_window << "  lr halvings=" << conv_decays;
+    std::cout << std::endl << std::endl;
 
     for (int it = 1; it <= MI; ++it) {
+        n_iter_done = it;
 
         // ---- Reweighted statistics ----
         double S = 0, sumW2 = 0;
@@ -966,6 +1002,43 @@ int main(int argc, char *argv[]) {
 
         if (loss < best_loss) {
             best_loss = loss; best_lam = lam; best_lnorm = lam_norm; best_it = it;
+        }
+
+        // ---- Adaptive stopping (--max-iter auto) ----
+        // Target accuracy: every moment within conv_acc (relative) of its target.
+        if (adaptive && !dbg && mx_rel < conv_acc) {
+            converged_flag = 1;
+            std::cout << "\n*** Converged (adaptive) at iter " << it
+                      << ": all moments within " << std::scientific << mx_rel
+                      << " < " << conv_acc << " of the target  loss=" << loss << std::fixed << std::endl;
+            break;
+        }
+        // Every conv_window iterations: if the best loss improved by less than conv_rtol
+        // (relative) over the window, go back to the best point and halve the learning
+        // rate; after conv_decays halvings without progress, stop.
+        if (adaptive && !dbg && it % conv_window == 0) {
+            const double rel = (window_ref_loss < 1e29)
+                             ? (window_ref_loss - best_loss) / window_ref_loss : 1.0;
+            window_ref_loss = best_loss;
+            if (rel < conv_rtol) {
+                if (n_decays >= conv_decays) {
+                    converged_flag = 1;
+                    std::cout << "\n*** Converged (adaptive) at iter " << it
+                              << ": best loss improved by " << std::scientific << rel
+                              << " < " << conv_rtol << " over " << conv_window
+                              << " iterations  best=" << best_loss << std::fixed << std::endl;
+                    break;
+                }
+                ++n_decays;
+                cur_lr *= lr_decay;
+                lam = best_lam;
+                std::fill(m_a.begin(), m_a.end(), 0.0);
+                std::fill(v_a.begin(), v_a.end(), 0.0);
+                std::cout << "  [stall] iter " << it << ": rel. improvement "
+                          << std::scientific << rel << " -> back to best, lr=" << cur_lr
+                          << std::fixed << " (" << n_decays << "/" << conv_decays << ")" << std::endl;
+                continue;   // restart from the best point with the smaller step
+            }
         }
 
         // ---- Plateau lr decay ----
@@ -1017,6 +1090,7 @@ int main(int argc, char *argv[]) {
 
         // ---- Convergence ----
         if (!dbg && (loss < loss_tol || mx_rel < tol)) {
+            converged_flag = 1;
             std::cout << "\n*** Converged at iter " << it
                       << "  loss=" << std::scientific << loss
                       << "  mx_rel=" << mx_rel << std::fixed << std::endl;
@@ -1050,7 +1124,10 @@ int main(int argc, char *argv[]) {
 
     lam = best_lam; lam_norm = best_lnorm;
     std::cout << "\nBest at iter " << best_it
-              << " (loss=" << std::scientific << best_loss << std::fixed << ")" << std::endl;
+              << " (loss=" << std::scientific << best_loss << std::fixed << ")"
+              << "  after " << n_iter_done << " iterations"
+              << (converged_flag ? "  [converged]" : "  [NOT converged: stopped at max-iter]")
+              << std::endl;
 
     // ---- Un-scale ----
     if (scale_mode == "target") {
@@ -1124,6 +1201,8 @@ int main(int argc, char *argv[]) {
     tm.Branch("pt_min",const_cast<double*>(&pt_min),"pt_min/D");
     tm.Branch("pt_max",const_cast<double*>(&pt_max),"pt_max/D");
     tm.Branch("best_loss",const_cast<double*>(&best_loss),"best_loss/D");
+    tm.Branch("n_iter",&n_iter_done,"n_iter/I");
+    tm.Branch("converged",&converged_flag,"converged/I");
     double sr_out = primary_R;
     tm.Branch("subjet_R",&sr_out,"subjet_R/D");
     // Provenance: the shared bin-center value (and the config file it came

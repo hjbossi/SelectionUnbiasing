@@ -34,6 +34,7 @@
 
 // standard library
 #include <iostream>
+#include <string>
 #include <vector>
 
 #define MAXJETS 100
@@ -45,13 +46,31 @@ using namespace Pythia8;
 
 int main(int argc, char* argv[]) {
 
-  // Create the ROOT application environment.
-  TApplication theApp("hist", &argc, argv);
+  // Command line (all optional, positional; arguments starting with '-',
+  // e.g. ROOT's -b, are ignored):
+  //   ./ppjets [nEvent] [outFile] [seed]
+  // seed = 0 keeps PYTHIA's default fixed seed. Use a different seed for
+  // every parallel job, otherwise the jobs generate identical events.
+  std::vector<std::string> args;
+  for (int i = 1; i < argc; ++i)
+    if (argv[i][0] != '-') args.push_back(argv[i]);
+  int nEvent = args.size() > 0 ? std::stoi(args[0]) : 1000000;
+  std::string outName = args.size() > 1 ? args[1]
+                        : "UnbiasingTest_PYTHIApp_pthatmin50_071125_1M.root";
+  int seed = args.size() > 2 ? std::stoi(args[2]) : 0;
+
+  // Create the ROOT application environment (our own arguments are not
+  // passed on, so ROOT does not try to open them as files).
+  int rootArgc = 1;
+  TApplication theApp("hist", &rootArgc, argv);
 
   // Create Pythia instance and set it up to generate hard QCD processes
   // above pTHat = 20 GeV for pp collisions at 14 TeV.
   Pythia pythia;
-  int nEvent = 1e6;
+  if (seed > 0) {
+    pythia.readString("Random:setSeed = on");
+    pythia.readString("Random:seed = " + std::to_string(seed));
+  }
 
   // pp beams
   pythia.readString("Beams:idA = 2212");
@@ -78,7 +97,8 @@ int main(int argc, char* argv[]) {
   if (!pythia.init()) return 1;
 
   // Create file on which histogram(s) can be saved.
-  TFile* outFile = new TFile("UnbiasingTest_PYTHIApp_pthatmin50_071125_1M.root", "RECREATE");
+  TFile* outFile = new TFile(outName.c_str(), "RECREATE");
+  if (outFile->IsZombie()) { std::cerr << "Cannot open " << outName << std::endl; return 1; }
   TTree*    tree = new TTree("tgenBefore","Pythia8 event tree");
 
   // ------------------ Define the tree ----------------

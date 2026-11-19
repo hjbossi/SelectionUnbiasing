@@ -77,25 +77,37 @@ void driveBins(const char* inputDirArg = "") {
   gSystem->mkdir(filesDir, kTRUE);
   gSystem->mkdir(plotsDir, kTRUE);
 
+  // Sample tag (required), e.g. UNBIAS_TAG=10M -> startBasis_100_140_10M.root,
+  // so outputs made from different input samples never overwrite each other.
+  const char* envTag = gSystem->Getenv("UNBIAS_TAG");
+  if (!(envTag && envTag[0])) {
+    std::cerr << "driveBins: UNBIAS_TAG is not set. Name the input sample, e.g.\n"
+              << "  export UNBIAS_TAG=10M" << std::endl;
+    return;
+  }
+  const TString tag = TString("_") + envTag;
+
   // ---- Bin 1: 100-140 GeV ----
   startBasis(inputDir,
-             filesDir + "/startBasis_100_140.root",
+             filesDir + "/startBasis_100_140" + tag + ".root",
              100, 140,
              p, d, rngSeed,
              binCenter,
-             filesDir + "/unbiasing_config_100_140.env",
+             filesDir + "/unbiasing_config_100_140" + tag + ".env",
              subjetRadii,
              eecTermsFile,
-             plotsDir);
+             unbiasRootPlotDir(plotsDir));
+  unbiasMplStartBasisPlot(filesDir + "/startBasis_100_140" + tag + ".root", plotsDir);
 
   // ---- Bin 2: 140-180 GeV ----
   startBasis(inputDir,
-             filesDir + "/startBasis_140_180.root",
+             filesDir + "/startBasis_140_180" + tag + ".root",
              140, 180,
              p, d, rngSeed,
              binCenter,
-             filesDir + "/unbiasing_config_140_180.env",
+             filesDir + "/unbiasing_config_140_180" + tag + ".env",
              subjetRadii,
              eecTermsFile,
-             plotsDir);
+             unbiasRootPlotDir(plotsDir));
+  unbiasMplStartBasisPlot(filesDir + "/startBasis_140_180" + tag + ".root", plotsDir);
 }

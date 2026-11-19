@@ -93,6 +93,40 @@ inline double lognormalBiasWeight(double pt, double mu, double sigma, double nor
 }
 
 // ----------------------------------------------------
+// Plotting backend, chosen with the environment variable UNBIAS_PLOTTER
+// (used by driveBins.C / driveBinsLognormal.C, see SETUP.md):
+//   root (default)  ROOT draws the plots, into plotsDir/root
+//   matplotlib      plot_mpl.py draws them, into plotsDir/mpl (no ROOT plots)
+//   both            both of the above
+// The Python interpreter is $UNBIAS_PYTHON, default python3.
+inline TString unbiasPlotter() {
+  const char* p = gSystem->Getenv("UNBIAS_PLOTTER");
+  TString s = (p && p[0]) ? p : "root";
+  if (s != "root" && s != "matplotlib" && s != "both") {
+    std::cerr << "UNBIAS_PLOTTER=" << s << " not understood (root, matplotlib or both); using root" << std::endl;
+    s = "root";
+  }
+  return s;
+}
+
+// plotDir argument for startBasis(): plotsDir/root, or empty (= no ROOT plot) in matplotlib mode.
+inline TString unbiasRootPlotDir(const TString& plotsDir) {
+  return (unbiasPlotter() == "matplotlib") ? TString("") : plotsDir + "/root";
+}
+
+// Draw the startBasis plot of outFile with plot_mpl.py, if UNBIAS_PLOTTER asks for it.
+inline void unbiasMplStartBasisPlot(const TString& outFile, const TString& plotsDir) {
+  const TString mode = unbiasPlotter();
+  if (mode == "root") return;
+  const TString dir = plotsDir + "/mpl";
+  const char* py = gSystem->Getenv("UNBIAS_PYTHON");
+  const TString cmd = Form("%s plot_mpl.py startbasis %s --plot-dir %s",
+                           (py && py[0]) ? py : "python3", outFile.Data(), dir.Data());
+  if (gSystem->Exec(cmd) != 0)
+    std::cerr << "warning: matplotlib plot failed: " << cmd << std::endl;
+}
+
+// ----------------------------------------------------
 
 // main function
 void startBasis(const char* inputDir = "/path/to/MCOutput/",  // no sensible default: always pass your own
@@ -246,9 +280,10 @@ void startBasis(const char* inputDir = "/path/to/MCOutput/",  // no sensible def
 
 
   // Histograms
-  const int nBins = 100;
-  const double ptMin = 90.0;
-  const double ptMax = 150.0;
+  // pT window +- 10 GeV in 0.6 GeV bins (90-150 GeV, 100 bins for the 100-140 window)
+  const double ptMin = pTLow - 10.0;
+  const double ptMax = pTHigh + 10.0;
+  const int nBins = (int)std::lround((ptMax - ptMin) / 0.6);
   TH1D* hPtX  = new TH1D("hPtX", "; #it{p}_{T} (GeV); d#it{N}/d#it{p}_{T}", nBins, ptMin, ptMax);
   TH1D* hPtY = new TH1D("hPtY","; #it{p}_{T} (GeV); d#it{N}/d#it{p}_{T}", nBins, ptMin, ptMax);
 
@@ -495,10 +530,18 @@ void startBasis(const char* inputDir = "/path/to/MCOutput/",  // no sensible def
   leg->SetBorderSize(0);
   leg->Draw();
 
-  gSystem->mkdir(plotDir, kTRUE);
-  // "_lognormal" suffix so a log-normal run does not overwrite the power-law plot.
-  c->SaveAs(Form("%s/jetPtShift_TChainReader_%s%s.pdf", plotDir, "072226",
-                 (biasType == 1) ? "_lognormal" : ""));
+  // Name the plot after outFile (startBasis_<bin>[_lognormal][_<tag>].root ->
+  // jetPtShift_TChainReader_<bin>[_lognormal][_<tag>].pdf), so different bins,
+  // bias shapes and input samples do not overwrite each other's plot.
+  TString plotSuffix = gSystem->BaseName(outFile);
+  plotSuffix.ReplaceAll(".root", "");
+  plotSuffix.ReplaceAll("startBasis", "");
+  if (biasType == 1 && !plotSuffix.Contains("lognormal")) plotSuffix += "_lognormal";
+  // Empty plotDir: no ROOT plot (UNBIAS_PLOTTER=matplotlib, see unbiasRootPlotDir()).
+  if (plotDir && plotDir[0]) {
+    gSystem->mkdir(plotDir, kTRUE);
+    c->SaveAs(Form("%s/jetPtShift_TChainReader%s.pdf", plotDir, plotSuffix.Data()));
+  }
 
   // Save histograms and trees for downstream unbiasing.
   hPtX->Write();

@@ -38,6 +38,17 @@ cd "$(dirname "$0")" || exit 1
 # Generated files live in ../Output/files/ (git-ignored), written there by driveBins.C.
 FILES=../Output/files
 mkdir -p "$FILES"
+# Sample tag (required, e.g. export UNBIAS_TAG=10M): must match the one used for
+# driveBins.C; every file name below ends in _<tag>.
+if [ -z "$UNBIAS_TAG" ]; then
+  echo "$(basename "$0"): UNBIAS_TAG is not set. Name the input sample, e.g. export UNBIAS_TAG=10M" >&2
+  exit 1
+fi
+S=_$UNBIAS_TAG
+# Fit length (see unbias_weights.cc): UNBIAS_MAX_ITER = number of iterations (default 20)
+# or "auto": run until every moment matches its target to UNBIAS_CONVERGE_ACCURACY
+# (relative, default 5e-3), or the loss stops improving, or 5000 iterations.
+FIT_ARGS="--max-iter ${UNBIAS_MAX_ITER:-20} --converge-accuracy ${UNBIAS_CONVERGE_ACCURACY:-5e-3}"
 
 # --subjet-source fastjet: recluster subjets on the fly from constituents
 # using the standalone-FastJet Cambridge/Aachen engine in subjet_basis.h
@@ -47,24 +58,24 @@ mkdir -p "$FILES"
 
 # ---- Bin 1: 100-140 GeV ----
 ./unbias_weights \
-    --input $FILES/startBasis_100_140.root \
+    --input $FILES/startBasis_100_140${S}.root \
     --tree tBiased \
-    --target-input $FILES/startBasis_100_140.root \
+    --target-input $FILES/startBasis_100_140${S}.root \
     --target-tree tRef \
-    --config $FILES/unbiasing_config_100_140.env \
+    --config $FILES/unbiasing_config_100_140${S}.env \
     --pt-min 100 --pt-max 140 \
     --subjet-source fastjet \
-    --out $FILES/unbias_weights_100_140.root \
-    --mode run
+    --out $FILES/unbias_weights_100_140${S}.root \
+    --mode run ${FIT_ARGS}
 
 # ---- Bin 2: 140-180 GeV ----
 ./unbias_weights \
-    --input $FILES/startBasis_140_180.root \
+    --input $FILES/startBasis_140_180${S}.root \
     --tree tBiased \
-    --target-input $FILES/startBasis_140_180.root \
+    --target-input $FILES/startBasis_140_180${S}.root \
     --target-tree tRef \
-    --config $FILES/unbiasing_config_140_180.env \
+    --config $FILES/unbiasing_config_140_180${S}.env \
     --pt-min 140 --pt-max 180 \
     --subjet-source fastjet \
-    --out $FILES/unbias_weights_140_180.root \
-    --mode run
+    --out $FILES/unbias_weights_140_180${S}.root \
+    --mode run ${FIT_ARGS}

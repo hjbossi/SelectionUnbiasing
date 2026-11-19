@@ -426,9 +426,11 @@ static void draw_unity_line(TH1D *ref_axis_hist) {
 
 // Save a canvas in every configured format, e.g. {"pdf","png"} ->
 // <plot_dir>/base_name.pdf, <plot_dir>/base_name.png.
+// --formats none saves nothing (the histograms still go to --out), e.g. when
+// the plots are drawn with matplotlib instead (plot_mpl.py, UNBIAS_PLOTTER).
 static void save_canvas(TCanvas *c, const std::string &base_name, const PlotConfig &cfg) {
   for (const std::string &fmt : cfg.formats)
-    c->SaveAs((cfg.plot_dir + "/" + base_name + "." + fmt).c_str());
+    if (fmt != "none") c->SaveAs((cfg.plot_dir + "/" + base_name + "." + fmt).c_str());
 }
 
 // =====================================================================
